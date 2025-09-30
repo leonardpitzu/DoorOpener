@@ -92,14 +92,14 @@ else:
     app.secret_key = secrets.token_hex(32)
     app.config["RANDOM_SECRET_WARNING"] = True
 
-# Configure secure session cookies
-# Allow overriding SESSION_COOKIE_SECURE via env for local HTTP/dev setups
-_secure_cookie = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() == "true"
+# Configure session cookies (will be overridden from config.ini below if present)
+_env_secure = os.environ.get("SESSION_COOKIE_SECURE")
+_secure_cookie = (_env_secure.lower() == "true") if _env_secure is not None else False
 app.config.update(
-    SESSION_COOKIE_SECURE=_secure_cookie,  # Only send over HTTPS when true
-    SESSION_COOKIE_HTTPONLY=True,  # Prevent XSS access to cookies
-    SESSION_COOKIE_SAMESITE="Lax",  # CSRF protection
-    PERMANENT_SESSION_LIFETIME=timedelta(days=30),  # Default permanent session duration
+    SESSION_COOKIE_SECURE=_secure_cookie,     # default False on HTTP; True only if explicitly set
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
 )
 
 # --- Configuration ---
@@ -131,6 +131,18 @@ if not _env_secret:
             )
     except Exception:
         pass
+
+# Override cookie “secure” flag from config.ini if provided
+try:
+    _cfg_secure = config.getboolean("server", "session_cookie_secure", fallback=None)
+except Exception:
+    _cfg_secure = None
+if _cfg_secure is not None:
+    app.config["SESSION_COOKIE_SECURE"] = _cfg_secure
+    logging.getLogger("dooropener").info(
+        "SESSION_COOKIE_SECURE set from config.ini: %s", _cfg_secure
+    )
+app.config.setdefault("SESSION_COOKIE_PATH", "/")
 
 # Per-user PINs from [pins] section (baseline, read-only)
 user_pins = dict(config.items("pins")) if config.has_section("pins") else {}
