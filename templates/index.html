@@ -827,9 +827,11 @@
             fetch('/battery', { credentials: 'same-origin', cache: 'no-store' })
                 .then(response => response.json())
                 .then(data => {
+                    document.getElementById("battery-container").style.display = "flex";
                     updateBatteryLevel(data.level);
                 })
                 .catch(error => {
+                    document.getElementById("battery-container").style.display = "none";
                     updateBatteryLevel(null);
                 });
         }
