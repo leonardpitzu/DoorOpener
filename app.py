@@ -698,6 +698,8 @@ def open_door():
                 else:
                     url = f"{ha_url}/api/services/switch/turn_on"
                 payload = {"entity_id": entity_id}
+                attempt_logger.info(f"Calling HA service at {url}")
+                attempt_logger.info(f"DEBUG verify={ha_session.verify!r}, headers={ha_session.headers}")
                 response = ha_session.post(url, json=payload, timeout=10)
                 response.raise_for_status()
                 if response.status_code == 200:
@@ -894,6 +896,8 @@ def open_door():
                 else:
                     url = f"{ha_url}/api/services/switch/turn_on"
                 payload = {"entity_id": entity_id}
+                attempt_logger.info(f"Calling HA service at {url}")
+                attempt_logger.info(f"DEBUG verify={ha_session.verify!r}, headers={ha_session.headers}")
                 response = ha_session.post(url, json=payload, timeout=10)
 
                 response.raise_for_status()  # Raise an exception for bad status codes
