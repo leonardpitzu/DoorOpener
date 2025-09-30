@@ -488,17 +488,17 @@
         <!-- Keypad -->
         <div class="keypad"
             style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 1.5rem; width: 280px; margin-left: auto; margin-right: auto;">
-            <button class="keypad-btn" onclick="addDigit('1')">1</button>
-            <button class="keypad-btn" onclick="addDigit('2')">2</button>
-            <button class="keypad-btn" onclick="addDigit('3')">3</button>
-            <button class="keypad-btn" onclick="addDigit('4')">4</button>
-            <button class="keypad-btn" onclick="addDigit('5')">5</button>
-            <button class="keypad-btn" onclick="addDigit('6')">6</button>
-            <button class="keypad-btn" onclick="addDigit('7')">7</button>
-            <button class="keypad-btn" onclick="addDigit('8')">8</button>
-            <button class="keypad-btn" onclick="addDigit('9')">9</button>
-            <button class="keypad-btn clear-btn" onclick="clearPin()">⌫</button>
-            <button class="keypad-btn" onclick="addDigit('0')">0</button>
+            <button class="keypad-btn" data-digit="1">1</button>
+            <button class="keypad-btn" data-digit="2">2</button>
+            <button class="keypad-btn" data-digit="3">3</button>
+            <button class="keypad-btn" data-digit="4">4</button>
+            <button class="keypad-btn" data-digit="5">5</button>
+            <button class="keypad-btn" data-digit="6">6</button>
+            <button class="keypad-btn" data-digit="7">7</button>
+            <button class="keypad-btn" data-digit="8">8</button>
+            <button class="keypad-btn" data-digit="9">9</button>
+            <button class="keypad-btn clear-btn" data-action="clear">⌫</button>
+            <button class="keypad-btn" data-digit="0">0</button>
             <button id="submitBtn" class="keypad-btn submit-btn" onclick="openDoor()">✓</button>
         </div>
 
@@ -558,47 +558,42 @@
         let autoSubmitTimer = null;
         let blockCountdownTimer = null;
 
-        function addDigit(digit) {
-            if (isSubmitting) return;
-            if (currentPin.length < 8) {
-                currentPin += digit;
-                updatePinDisplay();
-
-                // Haptic feedback
-                if (window.navigator.vibrate) {
-                    window.navigator.vibrate(30);
-                }
-
-                // Debounced auto-submit: wait until user pauses typing and length >= 4
-                if (autoSubmitTimer) {
-                    clearTimeout(autoSubmitTimer);
-                    autoSubmitTimer = null;
-                }
-                if (currentPin.length >= 4) {
-                    autoSubmitTimer = setTimeout(() => {
-                        if (!isSubmitting && currentPin.length >= 4) {
-                            openDoor();
-                        }
-                    }, 700);
+        document.addEventListener("DOMContentLoaded", () => {
+            const pinInput = document.getElementById("pin");
+            
+            function addDigit(d) {
+                if (pinInput) {
+                  pinInput.value += d;
                 }
             }
-        }
-
-        function clearPin() {
-            if (currentPin.length > 0) {
-                currentPin = currentPin.slice(0, -1);
-                updatePinDisplay();
-                if (autoSubmitTimer) {
-                    clearTimeout(autoSubmitTimer);
-                    autoSubmitTimer = null;
-                }
-
-                // Haptic feedback
-                if (window.navigator.vibrate) {
-                    window.navigator.vibrate(30);
+            
+            function clearPin() {
+                if (pinInput) {
+                  pinInput.value = pinInput.value.slice(0, -1);
                 }
             }
-        }
+            
+            function openDoor() {
+            const form = document.getElementById("pin-form");
+                if (form) {
+                  form.submit();
+                }
+            }
+            
+            document.querySelectorAll(".keypad-btn").forEach(btn => {
+                btn.addEventListener("click", () => {
+                  const digit = btn.dataset.digit;
+                  const action = btn.dataset.action;
+                  if (digit) {
+                    addDigit(digit);
+                  } else if (action === "clear") {
+                    clearPin();
+                  } else if (action === "submit") {
+                    openDoor();
+                  }
+                });
+            });
+        });
 
         function updatePinDisplay() {
             const display = document.getElementById('pinDisplay');
