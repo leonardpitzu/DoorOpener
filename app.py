@@ -123,14 +123,14 @@ MAX_GLOBAL_ATTEMPTS_PER_HOUR = int(_opts.get("max_global_attempts_per_hour", 50)
 SESSION_MAX_ATTEMPTS         = int(_opts.get("session_max_attempts", 3))
 
 # OIDC Configuration
-oidc_enabled         = bool(_opts.get("oidc_enabled", False)
+oidc_enabled         = bool(_opts.get("oidc_enabled", False))
 oidc_issuer          = _opts.get("oidc_issuer", None)
 oidc_client_id       = _opts.get("oidc_client_id", None)
 oidc_client_secret   = _opts.get("oidc_client_secret", None)
 oidc_redirect_uri    = _opts.get("oidc_redirect_uri", None)
 oidc_admin_group     = _opts.get("oidc_admin_group", "")
 oidc_user_group      = _opts.get("oidc_user_group", "")
-require_pin_for_oidc = bool(_opts.get("oidc_require_pin", False)
+require_pin_for_oidc = bool(_opts.get("oidc_require_pin", False))
 
 # If no env secret key was provided, allow overriding the temporary random with options.json
 if not _env_secret:
