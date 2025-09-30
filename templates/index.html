@@ -562,12 +562,19 @@
             btn.addEventListener('click', () => {
               const digit = btn.dataset.digit;
               const action = btn.dataset.action;
+
+              console.log("button clicked");
+              console.log(digit);
+              console.log(action);
             
               if (digit) {
+                console.log("digit");
                 addDigit(digit);
               } else if (action === 'clear') {
+                console.log("clear");
                 clearPin();
               } else if (action === 'submit') {
+                console.log("submit");
                 openDoor();
               }
             });
