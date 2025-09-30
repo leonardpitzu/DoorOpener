@@ -139,7 +139,7 @@ if _cfg_secure is not None:
 app.config.setdefault("SESSION_COOKIE_PATH", "/")
 
 # Per-user PINs from [pins] section (baseline, read-only)
-user_pins = dict(config.items("pins")) if config.has_section("pins") else {}
+user_pins = {}
 
 # JSON-backed users store (overrides and new users). Path can be overridden in tests via env.
 USERS_STORE_PATH = os.environ.get(
