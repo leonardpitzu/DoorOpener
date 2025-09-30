@@ -827,7 +827,6 @@
             fetch('/battery', { credentials: 'same-origin', cache: 'no-store' })
                 .then(response => response.json())
                 .then(data => {
-                    console.log(data.level);
                     if (data.level === null || data.level === "null" || data.level === undefined) {
                         document.getElementById("battery-container").style.display = "none";
                     } else {
