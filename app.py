@@ -215,6 +215,10 @@ if ha_ca_bundle and not os.path.exists(ha_ca_bundle):
     )
     ha_ca_bundle = ""
 
+logging.getLogger("dooropener").info(
+    f"HA ca_bundle in use: {ha_ca_bundle if ha_ca_bundle else 'system trust'}"
+)
+
 # Extract device name from entity
 if "." in entity_id:
     device_name = entity_id.split(".")[1]
@@ -229,6 +233,7 @@ ha_headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "applicatio
 ha_session = requests.Session()
 ha_session.verify = (ha_ca_bundle or True)
 ha_session.headers.update(ha_headers)
+logging.getLogger("dooropener").info(f"requests.Session.verify = {ha_session.verify!r}")
 
 # --- Enhanced Security & Rate Limiting ---
 ip_failed_attempts = defaultdict(int)
