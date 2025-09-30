@@ -101,20 +101,41 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=30),
 )
 
-# --- Configuration ---
-def save_config() -> None:
-    """Persist the current in-memory config to disk directly.
+OPTIONS_PATH = os.path.join(os.path.dirname(__file__), "options.json")
+try:
+    with open(OPTIONS_PATH, "r", encoding="utf-8") as _f:
+        _opts = json.load(_f)
+except FileNotFoundError as _e:
+    raise RuntimeError(f"Add-on options not found: {OPTIONS_PATH}. Is this running under HA Supervisor?") from _e
 
-    Note: If options.json is mounted read-only, this will raise a PermissionError or OSError.
-    """
-    with open(config_path, "w", encoding="utf-8") as f:
-        config.write(f)
+ha_url         = (_opts.get("ha_url") or "").rstrip("/")
+ha_token       = (_opts.get("ha_token") or "").strip()
+entity_id      = (_opts.get("entity_id") or "").strip()
+battery_entity = (_opts.get("battery_entity") or f"sensor.{entity_id.split('.')[1]}_battery").strip()
 
+server_port                  = int(os.environ.get("DOOROPENER_PORT", _opts.get("port", 6532)))
+tz_name                      = _opts.get("tz", "UTC")
+test_mode                    = bool(_opts.get("test_mode", False))
+admin_password               = (_opts.get("admin_password") or "4384339380437neghrjlkmfef").strip()
+MAX_ATTEMPTS                 = int(_opts.get("max_attempts", 5))
+BLOCK_TIME                   = int(_opts.get("block_time_minutes", 5))
+MAX_GLOBAL_ATTEMPTS_PER_HOUR = int(_opts.get("max_global_attempts_per_hour", 50))
+SESSION_MAX_ATTEMPTS         = int(_opts.get("session_max_attempts", 3))
+
+# OIDC Configuration
+oidc_enabled         = bool(_opts.get("oidc_enabled", False)
+oidc_issuer          = _opts.get("oidc_issuer", None)
+oidc_client_id       = _opts.get("oidc_client_id", None)
+oidc_client_secret   = _opts.get("oidc_client_secret", None)
+oidc_redirect_uri    = _opts.get("oidc_redirect_uri", None)
+oidc_admin_group     = _opts.get("oidc_admin_group", "")
+oidc_user_group      = _opts.get("oidc_user_group", "")
+require_pin_for_oidc = bool(_opts.get("oidc_require_pin", False)
 
 # If no env secret key was provided, allow overriding the temporary random with options.json
 if not _env_secret:
     try:
-        _cfg_secret = config.get("server", "secret_key", fallback=None)
+        _cfg_secret = = (_opts.get("secret_key") or "").strip()
         if _cfg_secret:
             app.secret_key = _cfg_secret
             app.config["RANDOM_SECRET_WARNING"] = False
@@ -128,7 +149,7 @@ if not _env_secret:
 
 # Override cookie “secure” flag from options.json if provided
 try:
-    _cfg_secure = config.getboolean("server", "session_cookie_secure", fallback=None)
+    _cfg_secure = bool(_opts.get("session_cookie_secure", False))
 except Exception:
     _cfg_secure = None
 if _cfg_secure is not None:
@@ -154,28 +175,6 @@ def get_effective_user_pins() -> dict:
     except Exception:
         return dict(user_pins)
 
-
-# Admin Configuration
-admin_password = config.get(
-    "admin", "admin_password", fallback="4384339380437neghrjlkmfef"
-)
-
-# Server Configuration
-server_port = int(
-    os.environ.get("DOOROPENER_PORT", config.getint("server", "port", fallback=6532))
-)
-test_mode = config.getboolean("server", "test_mode", fallback=False)
-
-# OIDC Configuration
-oidc_enabled = config.getboolean("oidc", "enabled", fallback=False)
-oidc_issuer = config.get("oidc", "issuer", fallback=None)
-oidc_client_id = config.get("oidc", "client_id", fallback=None)
-oidc_client_secret = config.get("oidc", "client_secret", fallback=None)
-oidc_redirect_uri = config.get("oidc", "redirect_uri", fallback=None)
-oidc_admin_group = config.get("oidc", "admin_group", fallback="")
-oidc_user_group = config.get("oidc", "user_group", fallback="")
-require_pin_for_oidc = config.getboolean("oidc", "require_pin_for_oidc", fallback=False)
-
 oauth = None
 if (
     oidc_enabled
@@ -200,44 +199,10 @@ if (
         logger.error(f"Failed to register OIDC client: {e}")
         oauth = None
 
-# Home Assistant Configuration
-ha_url = config.get("HomeAssistant", "url", fallback="http://homeassistant.local:8123")
-ha_token = config.get("HomeAssistant", "token")
-entity_id = config.get(
-    "HomeAssistant", "switch_entity"
-)  # Backward compatible; can be lock or switch
-battery_entity = config.get(
-    "HomeAssistant",
-    "battery_entity",
-    fallback=f"sensor.{entity_id.split('.')[1]}_battery",
-)
 
 # Optional custom CA bundle (PEM) to trust self-signed HA certificates
-ha_ca_bundle = config.get("HomeAssistant", "ca_bundle", fallback="").strip()
-OPTIONS_PATH = os.path.join(os.path.dirname(__file__), "options.json")
-try:
-    with open(OPTIONS_PATH, "r", encoding="utf-8") as _f:
-        _opts = json.load(_f)
-except FileNotFoundError as _e:
-    raise RuntimeError(f"Add-on options not found: {OPTIONS_PATH}. Is this running under HA Supervisor?") from _e
+ha_ca_bundle = (_opts.get("ca_bundle") or os.getenv("REQUESTS_CA_BUNDLE", "")).strip()
 
-ha_url    = (_opts.get("ha_url") or "").rstrip("/")
-ha_token  = (_opts.get("ha_token") or "").strip()
-entity_id = (_opts.get("entity_id") or "").strip()
-
-port                        = int(_opts.get("port", 6532))
-tz_name                     = _opts.get("tz", "UTC")
-test_mode                   = bool(_opts.get("test_mode", False))
-session_cookie_secure       = bool(_opts.get("session_cookie_secure", False))
-secret_key                  = (_opts.get("secret_key") or "").strip()
-admin_password              = (_opts.get("admin_password") or "").strip()
-max_attempts                = int(_opts.get("max_attempts", 5))
-block_time_minutes          = int(_opts.get("block_time_minutes", 5))
-max_global_attempts_per_hour= int(_opts.get("max_global_attempts_per_hour", 50))
-session_max_attempts        = int(_opts.get("session_max_attempts", 3))
-
-# CA bundle now provided via env by the add-on launcher when present
-ha_ca_bundle = os.getenv("REQUESTS_CA_BUNDLE", "").strip()
 # === END MIGRATION ===
 if ha_ca_bundle and not os.path.exists(ha_ca_bundle):
     logging.getLogger("dooropener").warning(
@@ -267,15 +232,7 @@ session_failed_attempts = defaultdict(int)
 session_blocked_until = defaultdict(lambda: None)
 global_failed_attempts = 0
 global_last_reset = get_current_time()
-# Load security settings from config
-MAX_ATTEMPTS = config.getint("security", "max_attempts", fallback=5)
-BLOCK_TIME = timedelta(
-    minutes=config.getint("security", "block_time_minutes", fallback=5)
-)
-MAX_GLOBAL_ATTEMPTS_PER_HOUR = config.getint(
-    "security", "max_global_attempts_per_hour", fallback=50
-)
-SESSION_MAX_ATTEMPTS = config.getint("security", "session_max_attempts", fallback=3)
+
 
 # Configure main logging
 logging.basicConfig(
@@ -1107,7 +1064,7 @@ def oidc_callback():
             abort(401, "Invalid nonce")
 
         # Verify the ID token signature and claims
-        public_key = config.get("oidc", "public_key", fallback=None)
+        public_key = _opts.get("oidc+public_key", None)
         if public_key:
             try:
                 claims = jwt.decode(id_token, key=public_key)
@@ -1656,7 +1613,7 @@ def oidc_logout():
             response = requests.get(well_known_url, timeout=10)
             if response.status_code == 200:
                 config = response.json()
-                logout_url = config.get("end_session_endpoint")
+                logout_url = _opts.get("oidc_end_session_endpoint")
                 if logout_url:
                     # Redirect to the OIDC provider's logout endpoint
                     return redirect(
