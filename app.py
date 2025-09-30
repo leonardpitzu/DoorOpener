@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DoorOpener Web Portal v1.7
+DoorOpener Web Portal v2.0
 ---------------------------
 A secure Flask web app to open a door via Home Assistant API, with visual keypad interface,
 enhanced multi-layer security, timezone support, and comprehensive brute force protection.
@@ -27,7 +27,6 @@ from flask import (
 )
 from users_store import UsersStore
 from werkzeug.middleware.proxy_fix import ProxyFix
-from configparser import ConfigParser
 import pytz
 
 try:
@@ -83,7 +82,7 @@ if not logger.handlers:
 # --- Flask App Setup ---
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-# Prefer fixed secret from environment; fallback to temporary random (will be overridden by config.ini later if present)
+# Prefer fixed secret from environment; fallback to temporary random (will be overridden by options.json later if present)
 _env_secret = os.environ.get("FLASK_SECRET_KEY")
 if _env_secret:
     app.secret_key = _env_secret
@@ -92,7 +91,7 @@ else:
     app.secret_key = secrets.token_hex(32)
     app.config["RANDOM_SECRET_WARNING"] = True
 
-# Configure session cookies (will be overridden from config.ini below if present)
+# Configure session cookies (will be overridden from options.json below if present)
 _env_secure = os.environ.get("SESSION_COOKIE_SECURE")
 _secure_cookie = (_env_secure.lower() == "true") if _env_secure is not None else False
 app.config.update(
@@ -103,21 +102,16 @@ app.config.update(
 )
 
 # --- Configuration ---
-config = ConfigParser()
-config_path = os.path.join(os.path.dirname(__file__), "config.ini")
-config.read(config_path)
-
-
 def save_config() -> None:
     """Persist the current in-memory config to disk directly.
 
-    Note: If config.ini is mounted read-only, this will raise a PermissionError or OSError.
+    Note: If options.json is mounted read-only, this will raise a PermissionError or OSError.
     """
     with open(config_path, "w", encoding="utf-8") as f:
         config.write(f)
 
 
-# If no env secret key was provided, allow overriding the temporary random with config.ini
+# If no env secret key was provided, allow overriding the temporary random with options.json
 if not _env_secret:
     try:
         _cfg_secret = config.get("server", "secret_key", fallback=None)
@@ -126,13 +120,13 @@ if not _env_secret:
             app.config["RANDOM_SECRET_WARNING"] = False
         elif app.config.get("RANDOM_SECRET_WARNING"):
             logging.getLogger("dooropener").warning(
-                "FLASK_SECRET_KEY not set and no [server] secret_key in config.ini; "
+                "FLASK_SECRET_KEY not set and no secret_key provided in options; "
                 "sessions may become invalid across restarts or multiple workers."
             )
     except Exception:
         pass
 
-# Override cookie “secure” flag from config.ini if provided
+# Override cookie “secure” flag from options.json if provided
 try:
     _cfg_secure = config.getboolean("server", "session_cookie_secure", fallback=None)
 except Exception:
@@ -140,7 +134,7 @@ except Exception:
 if _cfg_secure is not None:
     app.config["SESSION_COOKIE_SECURE"] = _cfg_secure
     logging.getLogger("dooropener").info(
-        "SESSION_COOKIE_SECURE set from config.ini: %s", _cfg_secure
+        "SESSION_COOKIE_SECURE set from options.json: %s", _cfg_secure
     )
 app.config.setdefault("SESSION_COOKIE_PATH", "/")
 
@@ -155,7 +149,6 @@ users_store = UsersStore(USERS_STORE_PATH)
 
 
 def get_effective_user_pins() -> dict:
-    """Merge config.ini [pins] with JSON store users (active only)."""
     try:
         return users_store.effective_pins(user_pins)
     except Exception:
@@ -221,6 +214,31 @@ battery_entity = config.get(
 
 # Optional custom CA bundle (PEM) to trust self-signed HA certificates
 ha_ca_bundle = config.get("HomeAssistant", "ca_bundle", fallback="").strip()
+OPTIONS_PATH = os.path.join(os.path.dirname(__file__), "options.json")
+try:
+    with open(OPTIONS_PATH, "r", encoding="utf-8") as _f:
+        _opts = json.load(_f)
+except FileNotFoundError as _e:
+    raise RuntimeError(f"Add-on options not found: {OPTIONS_PATH}. Is this running under HA Supervisor?") from _e
+
+ha_url    = (_opts.get("ha_url") or "").rstrip("/")
+ha_token  = (_opts.get("ha_token") or "").strip()
+entity_id = (_opts.get("entity_id") or "").strip()
+
+port                        = int(_opts.get("port", 6532))
+tz_name                     = _opts.get("tz", "UTC")
+test_mode                   = bool(_opts.get("test_mode", False))
+session_cookie_secure       = bool(_opts.get("session_cookie_secure", False))
+secret_key                  = (_opts.get("secret_key") or "").strip()
+admin_password              = (_opts.get("admin_password") or "").strip()
+max_attempts                = int(_opts.get("max_attempts", 5))
+block_time_minutes          = int(_opts.get("block_time_minutes", 5))
+max_global_attempts_per_hour= int(_opts.get("max_global_attempts_per_hour", 50))
+session_max_attempts        = int(_opts.get("session_max_attempts", 3))
+
+# CA bundle now provided via env by the add-on launcher when present
+ha_ca_bundle = os.getenv("REQUESTS_CA_BUNDLE", "").strip()
+# === END MIGRATION ===
 if ha_ca_bundle and not os.path.exists(ha_ca_bundle):
     logging.getLogger("dooropener").warning(
         f"Configured HomeAssistant ca_bundle not found: {ha_ca_bundle}. Falling back to system trust store."
@@ -239,7 +257,7 @@ ha_headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "applicatio
 # Use a single requests.Session for all HA calls and make it trust the configured CA bundle.
 # ha_ca_bundle is already read from [HomeAssistant].ca_bundle above.
 ha_session = requests.Session()
-ha_session.verify = (ha_ca_bundle or True)
+ha_session.verify = ha_ca_bundle if ha_ca_bundle else True
 ha_session.headers.update(ha_headers)
 
 # --- Enhanced Security & Rate Limiting ---
@@ -1624,145 +1642,6 @@ def admin_users_delete(username: str):
     except Exception as e:
         logger.error(f"Error deleting user: {e}")
         return jsonify({"error": "Failed to delete user"}), 500
-
-
-@app.route("/admin/users/<username>/migrate", methods=["POST"])
-def admin_users_migrate(username: str):
-    """Migrate a user from config.ini [pins] to the JSON user store.
-
-    Optionally accepts {"pin": "new_pin"} to set a new PIN during migration.
-    If no PIN provided, uses the existing PIN from config.ini.
-    Config entry remains but is ignored when user exists in JSON store.
-    """
-    if not _require_admin_authenticated():
-        return jsonify({"error": "Authentication required"}), 401
-
-    # Get existing PIN from config
-    existing_pin = user_pins.get(username)
-    if not existing_pin:
-        return jsonify({"error": "User not found in config"}), 404
-
-    # Parse optional new PIN from request
-    body = request.get_json(silent=True) or {}
-    new_pin = body.get("pin")
-    if new_pin is not None:
-        if (
-            not isinstance(new_pin, str)
-            or not new_pin.isdigit()
-            or not (4 <= len(new_pin) <= 8)
-        ):
-            return jsonify({"error": "PIN must be 4-8 digits"}), 400
-        pin_to_use = new_pin
-    else:
-        pin_to_use = existing_pin
-
-    # Validate PIN format
-    if (
-        not isinstance(pin_to_use, str)
-        or not pin_to_use.isdigit()
-        or not (4 <= len(pin_to_use) <= 8)
-    ):
-        return jsonify({"error": "PIN must be 4-8 digits"}), 400
-
-    # Create user in JSON store
-    try:
-        users_store.create_user(username, pin_to_use, True)
-
-        # Remove from config.ini after successful migration
-        try:
-            if config.has_option("pins", username):
-                config.remove_option("pins", username)
-                save_config()
-                # Update in-memory user_pins
-                user_pins.pop(username, None)
-        except Exception as config_err:
-            logger.warning(f"Failed to remove {username} from config.ini: {config_err}")
-
-        attempt_logger.info(
-            json.dumps(
-                {
-                    "timestamp": get_current_time().isoformat(),
-                    "ip": request.remote_addr or "unknown",
-                    "user": "ADMIN",
-                    "status": "ADMIN_USER_MIGRATE",
-                    "details": f"username={username}",
-                }
-            )
-        )
-        return jsonify({"status": "migrated"})
-    except Exception as e:
-        logger.error(f"Error creating user in store: {e}")
-        return jsonify({"error": "Failed to migrate user"}), 500
-
-
-@app.route("/admin/users/migrate-all", methods=["POST"])
-def admin_users_migrate_all():
-    """Migrate all config-only users into the JSON store.
-
-    Each user is migrated individually with safe config update and rollback on failure.
-    Returns summary of successes and failures.
-    """
-    if not _require_admin_authenticated():
-        return jsonify({"error": "Authentication required"}), 401
-    if not user_pins:
-        return jsonify({"migrated": 0, "failed": []}), 200
-
-    migrated = 0
-    failed = []
-    # Copy list of usernames to avoid mutation during loop
-    candidates = list(user_pins.keys())
-
-    for username in candidates:
-        existing_pin = user_pins.get(username)
-        if not isinstance(existing_pin, str):
-            failed.append({"username": username, "error": "invalid_pin"})
-            continue
-        # Validate format
-        if not (existing_pin.isdigit() and 4 <= len(existing_pin) <= 8):
-            failed.append({"username": username, "error": "invalid_format"})
-            continue
-        # Skip if user already exists in JSON store
-        if users_store.user_exists(username):
-            continue
-
-        # Create in JSON store
-        try:
-            users_store.create_user(username, existing_pin, True)
-
-            # Remove from config.ini after successful migration
-            try:
-                if config.has_option("pins", username):
-                    config.remove_option("pins", username)
-                    save_config()
-                    # Update in-memory user_pins
-                    user_pins.pop(username, None)
-            except Exception as config_err:
-                logger.warning(
-                    f"Failed to remove {username} from config.ini: {config_err}"
-                )
-
-            attempt_logger.info(
-                json.dumps(
-                    {
-                        "timestamp": get_current_time().isoformat(),
-                        "ip": request.remote_addr or "unknown",
-                        "user": "ADMIN",
-                        "status": "ADMIN_USER_MIGRATE",
-                        "details": f"username={username}",
-                    }
-                )
-            )
-            migrated += 1
-        except Exception as e:
-            # Log full exception details server-side for later troubleshooting
-            logger.error(f"Failed to migrate user {username}: {e}", exc_info=True)
-            failed.append(
-                {"username": username, "error": "store_write_failed", "detail": "internal_error"}
-            )
-
-    status = 200 if not failed else 207  # multi-status semantics
-    return jsonify({"migrated": migrated, "failed": failed}), status
-
 
 @app.route("/oidc/logout")
 def oidc_logout():
