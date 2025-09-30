@@ -224,6 +224,12 @@ else:
 # Headers for HA API requests
 ha_headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
 
+# Use a single requests.Session for all HA calls and make it trust the configured CA bundle.
+# ha_ca_bundle is already read from [HomeAssistant].ca_bundle above.
+ha_session = requests.Session()
+ha_session.verify = (ha_ca_bundle or True)
+ha_session.headers.update(ha_headers)
+
 # --- Enhanced Security & Rate Limiting ---
 ip_failed_attempts = defaultdict(int)
 ip_blocked_until = defaultdict(lambda: None)
@@ -409,12 +415,8 @@ def battery():
             f"Battery endpoint called - fetching state for entity: {battery_entity}"
         )
         url = f"{ha_url}/api/states/{battery_entity}"
-        response = requests.get(
-            url,
-            headers=ha_headers,
-            timeout=10,
-            verify=(ha_ca_bundle or True),
-        )
+        response = ha_session.get(url, timeout=10)
+        
         if response.status_code == 200:
             state_data = response.json()
             battery_level = state_data.get("state")
@@ -691,13 +693,7 @@ def open_door():
                 else:
                     url = f"{ha_url}/api/services/switch/turn_on"
                 payload = {"entity_id": entity_id}
-                response = requests.post(
-                    url,
-                    headers=ha_headers,
-                    json=payload,
-                    timeout=10,
-                    verify=(ha_ca_bundle or True),
-                )
+                response = ha_session.post(url, json=payload, timeout=10)
                 response.raise_for_status()
                 if response.status_code == 200:
                     reason = "Door opened via OIDC"
@@ -893,13 +889,7 @@ def open_door():
                 else:
                     url = f"{ha_url}/api/services/switch/turn_on"
                 payload = {"entity_id": entity_id}
-                response = requests.post(
-                    url,
-                    headers=ha_headers,
-                    json=payload,
-                    timeout=10,
-                    verify=(ha_ca_bundle or True),
-                )
+                response = ha_session.post(url, json=payload, timeout=10)
 
                 response.raise_for_status()  # Raise an exception for bad status codes
 
