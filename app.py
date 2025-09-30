@@ -135,7 +135,7 @@ require_pin_for_oidc = bool(_opts.get("oidc_require_pin", False))
 # If no env secret key was provided, allow overriding the temporary random with options.json
 if not _env_secret:
     try:
-        _cfg_secret = = (_opts.get("secret_key") or "").strip()
+        _cfg_secret = (_opts.get("secret_key") or "").strip()
         if _cfg_secret:
             app.secret_key = _cfg_secret
             app.config["RANDOM_SECRET_WARNING"] = False
