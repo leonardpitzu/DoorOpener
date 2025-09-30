@@ -828,10 +828,12 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById("battery-container").style.display = "flex";
+                    console.log(data);
                     updateBatteryLevel(data.level);
                 })
                 .catch(error => {
                     document.getElementById("battery-container").style.display = "none";
+                    console.log(data);
                     updateBatteryLevel(null);
                 });
         }
