@@ -827,13 +827,16 @@
             fetch('/battery', { credentials: 'same-origin', cache: 'no-store' })
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById("battery-container").style.display = "flex";
-                    console.log("data");
-                    updateBatteryLevel(data.level);
+                    console.log(data.level);
+                    if (data.level === null || data.level === "null" || data.level === undefined) {
+                        document.getElementById("battery-container").style.display = "none";
+                    } else {
+                        document.getElementById("battery-container").style.display = "flex";
+                        updateBatteryLevel(Number(data.level));
+                    }
                 })
                 .catch(error => {
                     document.getElementById("battery-container").style.display = "none";
-                    console.log("null");
                 });
         }
 
