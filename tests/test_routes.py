@@ -26,12 +26,18 @@ def test_csp_directives_on_index(client):
     assert "connect-src 'self'" in csp
 
 
-def test_csp_uses_nonce_not_unsafe_inline(client):
-    """CSP should use nonce-based policy, not unsafe-inline."""
+def test_csp_uses_nonce_for_scripts(client):
+    """CSP script-src should use nonce, style-src allows unsafe-inline for attribute styles."""
     r = client.get("/")
     csp = r.headers.get("Content-Security-Policy", "")
     assert "'nonce-" in csp
-    assert "'unsafe-inline'" not in csp
+    # script-src uses nonce, not unsafe-inline
+    script_src = [p for p in csp.split(";") if "script-src" in p][0]
+    assert "'nonce-" in script_src
+    assert "'unsafe-inline'" not in script_src
+    # style-src allows unsafe-inline (needed for inline style="" attributes in Safari)
+    style_src = [p for p in csp.split(";") if "style-src" in p][0]
+    assert "'unsafe-inline'" in style_src
 
 
 def test_delay_function_values():

@@ -176,7 +176,7 @@ def add_security_headers(response, csp_nonce: str | None = None):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' {nonce_src}; "
-            f"style-src 'self' {nonce_src}; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self'; "
             "connect-src 'self'; "
