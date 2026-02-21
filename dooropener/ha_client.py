@@ -33,7 +33,7 @@ class HAClient:
             }
         )
         self._battery_cache: int | None = None
-        self._battery_cache_ts: float = 0.0
+        self._battery_cache_ts: float = -(self._BATTERY_TTL + 1)
 
     def trigger_entity(self) -> dict:
         """Call the correct HA service to open the door.

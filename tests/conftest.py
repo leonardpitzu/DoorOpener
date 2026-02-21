@@ -75,7 +75,7 @@ def reset_state():
     app_module.users_store._pending_touches = {}
     # Reset battery cache
     app_module.ha_client._battery_cache = None
-    app_module.ha_client._battery_cache_ts = 0.0
+    app_module.ha_client._battery_cache_ts = -(app_module.ha_client._BATTERY_TTL + 1)
     # Reset battery rate limiter
     app_module._battery_request_ts.clear()
     # Bypass CSRF for all tests (dedicated CSRF tests re-enable it)
