@@ -36,6 +36,19 @@ def test_battery_route(client):
         assert response.get_json()["level"] == 85
 
 
+def test_battery_route_disabled(client):
+    """When battery_entity is empty, /battery returns null without calling HA."""
+    import config
+    original = config.battery_entity
+    config.battery_entity = ""
+    try:
+        response = client.get("/battery")
+        assert response.status_code == 200
+        assert response.get_json()["level"] is None
+    finally:
+        config.battery_entity = original
+
+
 def test_open_door_invalid_input(client):
     headers = {
         "User-Agent": "pytest-client/1.0 (+https://example.test)",

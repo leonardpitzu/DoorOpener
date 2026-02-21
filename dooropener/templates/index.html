@@ -506,6 +506,7 @@
     </div>
     <div id="toast-container"></div>
 
+    {% if battery_enabled %}
     <!-- Battery icon positioned next to admin icon -->
     <div id="battery-container"
         style="position: fixed; bottom: 20px; right: 80px; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(255,255,255,0.25); border-radius: 50px; backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.3); z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
@@ -517,6 +518,7 @@
         </div>
         <span id="battery-level" style="font-size: 0.8rem; font-weight: 600; color: rgba(0,0,0,0.7);">--</span>
     </div>
+    {% endif %}
 
     <!-- GitHub button -->
     <a href="https://github.com/leonardpitzu/DoorOpener" target="_blank"
@@ -536,7 +538,7 @@
     </a>
 
     <script nonce="{{ csp_nonce }}">
-        let batteryLevel = null;
+        {% if battery_enabled %}let batteryLevel = null;{% endif %}
         let currentPin = '';
         let isSubmitting = false;
         let autoSubmitTimer = null;
@@ -734,6 +736,7 @@
             } catch (e) { }
         }
 
+        {% if battery_enabled %}
         function updateBatteryLevel(level) {
             const batteryIcon = document.getElementById('battery-icon');
             const batteryLevel = document.getElementById('battery-level');
@@ -773,6 +776,7 @@
                     document.getElementById("battery-container").style.display = "none";
                 });
         }
+        {% endif %}
 
         function playSuccessSound() {
             try {
@@ -899,9 +903,11 @@
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('/service-worker.js').catch(() => { /* ignore */ });
             }
+            {% if battery_enabled %}
             // Initial battery level fetch, then poll every 60s
             fetchBatteryLevel();
             setInterval(fetchBatteryLevel, 60000);
+            {% endif %}
 
             // Initialize PIN display
             updatePinDisplay();

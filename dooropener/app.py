@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from datetime import timedelta
 from functools import wraps
 from logging.handlers import RotatingFileHandler
@@ -178,7 +179,7 @@ def after_request(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""))
+    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), battery_enabled=bool(config.battery_entity))
 
 
 @app.route("/service-worker.js")
@@ -212,9 +213,10 @@ _battery_request_ts: dict[str, float] = {}
 
 @app.route("/battery")
 def battery():
-    import time as _time
+    if not config.battery_entity:
+        return jsonify({"level": None})
     client_ip = request.remote_addr
-    now = _time.monotonic()
+    now = time.monotonic()
     last = _battery_request_ts.get(client_ip, 0.0)
     if now - last < 10:
         level = ha_client.get_battery_level()  # cheap — returns from cache
