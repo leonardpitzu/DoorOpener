@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin - Door Opener v1.8</title>
+    <title>Admin - DoorOpener</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="shortcut icon" href="/static/favicon.ico">
     <meta name="csrf-token" content="{{ csrf_token }}">
-    <style nonce="{{ csp_nonce }}">
+    <style>
         body {
             font-family: 'Arial', sans-serif;
             margin: 0;
@@ -877,9 +877,6 @@
                     } catch (e) {}
                     return `
                         <div class="log-card">
-                            <td class="actions-cell">
-                                <span class="source-badge config-only">Config-only</span>
-                            </td>
                             <div class="card-body">
                                 <div class="card-row"><span class="label">IP Address</span><span class="value">${escapeHtml(log.ip)}</span></div>
                                 <div class="card-row"><span class="label">User</span><span class="value">${escapeHtml(log.user || 'UNKNOWN')}</span></div>

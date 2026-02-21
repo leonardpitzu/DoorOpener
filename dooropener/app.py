@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from datetime import timedelta
 from functools import wraps
 from logging.handlers import RotatingFileHandler
@@ -212,9 +213,8 @@ _battery_request_ts: dict[str, float] = {}
 
 @app.route("/battery")
 def battery():
-    import time as _time
     client_ip = request.remote_addr
-    now = _time.monotonic()
+    now = time.monotonic()
     last = _battery_request_ts.get(client_ip, 0.0)
     if now - last < 10:
         level = ha_client.get_battery_level()  # cheap — returns from cache

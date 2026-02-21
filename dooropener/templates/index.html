@@ -14,7 +14,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="DoorOpener">
     <meta name="csrf-token" content="{{ csrf_token }}">
-    <style nonce="{{ csp_nonce }}">
+    <style>
         body {
             font-family: 'Arial', sans-serif;
             display: flex;
@@ -558,7 +558,6 @@
     </a>
 
     <script nonce="{{ csp_nonce }}">
-        let batteryLevel = null;
         let currentPin = '';
         let isSubmitting = false;
         let autoSubmitTimer = null;

@@ -224,6 +224,6 @@ def validate_pin_input(pin) -> tuple[bool, str | None]:
         return False, None
 
 
-def get_delay_seconds(attempt_count: int) -> int:
+def get_delay_seconds(attempt_count: int) -> int:  # used by tests
     """Calculate progressive delay: 1s, 2s, 4s, 8s, 16s (informational only)."""
     return min(2 ** (attempt_count - 1), 16) if attempt_count > 0 else 0

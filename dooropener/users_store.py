@@ -5,9 +5,6 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 
-ISO_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -68,9 +65,6 @@ class UsersStore:
                 pass
             raise
         self._pin_cache = None  # invalidate on write
-
-    def _invalidate_cache(self) -> None:
-        self._pin_cache = None
 
     def get_pin_map(self) -> Dict[str, str]:
         """Return cached ``{pin: username}`` dict of active users."""

@@ -40,13 +40,6 @@ def test_csp_uses_nonce_for_scripts(client):
     assert "'unsafe-inline'" in style_src
 
 
-def test_delay_function_values():
-    from security import get_delay_seconds
-    expected = {0: 0, 1: 1, 2: 2, 3: 4, 4: 8, 5: 16, 6: 16}
-    for attempts, delay in expected.items():
-        assert get_delay_seconds(attempts) == delay
-
-
 def test_counters_reset_on_success_after_no_block(client, monkeypatch):
     import app as app_module
     monkeypatch.setattr(

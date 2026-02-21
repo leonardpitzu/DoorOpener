@@ -10,30 +10,18 @@ from datetime import datetime, timezone
 @pytest.fixture
 def csrf_client():
     """Client with real CSRF checking enabled."""
+    import hmac as _hmac
     import app as app_module
-    from app import _set_nonce_and_csrf  # noqa: F401 – proves it exists
+    from flask import request, session, jsonify
 
     # Restore the real _check_csrf (autouse fixture replaces it with a no-op)
-    # We import the original from the module's __code__ by re-defining it.
-    # Since reset_state runs before each test and sets _check_csrf = lambda: None,
-    # we need to bring back the real one.
-    # Re-read the real function from the module source
-    real_check = None
-    for name, obj in vars(app_module).items():
-        if name == "_real_check_csrf":
-            real_check = obj
-            break
-    if real_check is None:
-        # Fallback: reconstruct from the original implementation
-        import hmac as _hmac
-        from flask import request, session, jsonify
-        def real_check():
-            token = request.headers.get("X-CSRF-Token") or (
-                request.get_json(silent=True) or {}
-            ).get("_csrf_token")
-            if not token or not _hmac.compare_digest(token, session.get("_csrf_token", "")):
-                return jsonify({"status": "error", "message": "Invalid or missing CSRF token"}), 403
-            return None
+    def real_check():
+        token = request.headers.get("X-CSRF-Token") or (
+            request.get_json(silent=True) or {}
+        ).get("_csrf_token")
+        if not token or not _hmac.compare_digest(token, session.get("_csrf_token", "")):
+            return jsonify({"status": "error", "message": "Invalid or missing CSRF token"}), 403
+        return None
 
     app_module._check_csrf = real_check
     app_module.app.config["TESTING"] = True
