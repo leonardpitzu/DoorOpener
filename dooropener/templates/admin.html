@@ -306,7 +306,7 @@
                         Remember me for 30 days
                     </label>
                 </div>
-                <button onclick="login()" style="padding: 12px 24px; background: linear-gradient(135deg, #4CAF50, #45a049); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Login</button>
+                <button id="loginBtn" style="padding: 12px 24px; background: linear-gradient(135deg, #4CAF50, #45a049); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Login</button>
             </div>
             <div id="loginError" style="color: #c62828; margin-top: 1rem; display: none;"></div>
         </div>
@@ -314,19 +314,19 @@
         <div id="dashboard" style="display: none;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
                 <h1>🔐 Admin Dashboard</h1>
-                <button onclick="logout()" style="padding: 8px 16px; background: linear-gradient(135deg, #f44336, #d32f2f); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Logout</button>
+                <button id="logoutBtn" style="padding: 8px 16px; background: linear-gradient(135deg, #f44336, #d32f2f); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Logout</button>
             </div>
             
             <div class="tabs">
-                <button id="tabLogsBtn" class="tab-btn active" onclick="switchTab('logs')">🗂 Logs</button>
-                <button id="tabUsersBtn" class="tab-btn" onclick="switchTab('users')">👥 Users</button>
+                <button id="tabLogsBtn" class="tab-btn active" data-tab="logs">🗂 Logs</button>
+                <button id="tabUsersBtn" class="tab-btn" data-tab="users">👥 Users</button>
             </div>
 
             <div id="logsTab" class="tab-panel">
             <div class="controls">
             <div class="control-group">
                 <label for="sortBy">Sort by:</label>
-                <select id="sortBy" onchange="sortLogs()">
+                <select id="sortBy">
                     <option value="time">Time (newest first)</option>
                     <option value="time_asc">Time (oldest first)</option>
                     <option value="user">User</option>
@@ -335,13 +335,13 @@
             </div>
             <div class="control-group">
                 <label for="filterUser">Filter by user:</label>
-                <select id="filterUser" onchange="filterLogs()">
+                <select id="filterUser">
                     <option value="">All users</option>
                 </select>
             </div>
             <div class="control-group">
                 <label for="filterStatus">Filter by status:</label>
-                <select id="filterStatus" onchange="filterLogs()">
+                <select id="filterStatus">
                     <option value="">All statuses</option>
                     <option value="SUCCESS">Success</option>
                     <option value="FAILURE">Failure</option>
@@ -350,13 +350,13 @@
             <div class="control-group">
                 <label for="compactToggle">Density:</label>
                 <label style="display:flex; align-items:center; gap:0.5rem;">
-                    <input type="checkbox" id="compactToggle" onchange="toggleCompact(event)" />
+                    <input type="checkbox" id="compactToggle" />
                     Compact
                 </label>
             </div>
-                <button class="refresh-btn" onclick="loadLogs()">🔄 Refresh</button>
+                <button id="refreshLogsBtn" class="refresh-btn">🔄 Refresh</button>
                 <div style="flex:1"></div>
-                <button id="btnClearAll" class="refresh-btn" style="background: linear-gradient(135deg, #e53935, #c62828);" onclick="openClearAll('btnClearAll')">🧹 Clear All Logs</button>
+                <button id="btnClearAll" class="refresh-btn" style="background: linear-gradient(135deg, #e53935, #c62828);">🧹 Clear All Logs</button>
             </div>
 
             <div id="logContainer" class="table-responsive">
@@ -384,7 +384,7 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; margin: 0.5rem 0 1rem 0; gap:8px;">
                     <h2 style="margin:0;">👥 User Management</h2>
                     <div style="display:flex; gap:8px;">
-                        <button class="refresh-btn" onclick="openAddUser()" style="background: linear-gradient(135deg, #1976d2, #1565c0);">➕ Add User</button>
+                        <button id="addUserBtn" class="refresh-btn" style="background: linear-gradient(135deg, #1976d2, #1565c0);">➕ Add User</button>
                     </div>
                 </div>
 
@@ -577,9 +577,9 @@
                 const timesUsed = u.times_used || 0;
                 const src = u.source || 'store';
                 const actionsHtml = `
-                    <button class="refresh-btn" style="padding:6px 10px; background: linear-gradient(135deg, #5e35b1, #4527a0);" onclick="openEditUser('${escapeAttr(u.username)}')">Edit</button>
-                    <button class="refresh-btn" style="padding:6px 10px; background: linear-gradient(135deg, #00897b, #00695c);" onclick="toggleActive('${escapeAttr(u.username)}', ${u.active ? 'false' : 'true'})">${u.active ? 'Deactivate' : 'Activate'}</button>
-                    <button class="refresh-btn" style="padding:6px 10px; background: linear-gradient(135deg, #e53935, #c62828);" onclick="deleteUser('${escapeAttr(u.username)}')">Delete</button>
+                    <button class="refresh-btn" data-action="edit" data-user="${escapeAttr(u.username)}" style="padding:6px 10px; background: linear-gradient(135deg, #5e35b1, #4527a0);">Edit</button>
+                    <button class="refresh-btn" data-action="toggle" data-user="${escapeAttr(u.username)}" data-active="${u.active ? 'false' : 'true'}" style="padding:6px 10px; background: linear-gradient(135deg, #00897b, #00695c);">${u.active ? 'Deactivate' : 'Activate'}</button>
+                    <button class="refresh-btn" data-action="delete" data-user="${escapeAttr(u.username)}" style="padding:6px 10px; background: linear-gradient(135deg, #e53935, #c62828);">Delete</button>
                 `;
                 return `
                     <tr>
@@ -965,6 +965,30 @@
                 }, 3500);
             }
         }
+
+        // --- Bind all event listeners (replaces inline handlers) ---
+        document.getElementById('loginBtn').addEventListener('click', login);
+        document.getElementById('logoutBtn').addEventListener('click', logout);
+        document.getElementById('tabLogsBtn').addEventListener('click', () => switchTab('logs'));
+        document.getElementById('tabUsersBtn').addEventListener('click', () => switchTab('users'));
+        document.getElementById('sortBy').addEventListener('change', sortLogs);
+        document.getElementById('filterUser').addEventListener('change', filterLogs);
+        document.getElementById('filterStatus').addEventListener('change', filterLogs);
+        document.getElementById('compactToggle').addEventListener('change', (e) => toggleCompact(e));
+        document.getElementById('refreshLogsBtn').addEventListener('click', loadLogs);
+        document.getElementById('btnClearAll').addEventListener('click', () => openClearAll('btnClearAll'));
+        document.getElementById('addUserBtn').addEventListener('click', openAddUser);
+
+        // Event delegation for dynamically rendered user-action buttons
+        document.getElementById('usersTableBody').addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const user = btn.dataset.user;
+            if (action === 'edit') openEditUser(user);
+            else if (action === 'toggle') toggleActive(user, btn.dataset.active === 'true');
+            else if (action === 'delete') deleteUser(user);
+        });
     </script>
     <div id="toast-container"></div>
 </body>
