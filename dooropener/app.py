@@ -179,7 +179,7 @@ def after_request(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""))
+    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), battery_enabled=bool(config.battery_entity))
 
 
 @app.route("/service-worker.js")
@@ -213,6 +213,8 @@ _battery_request_ts: dict[str, float] = {}
 
 @app.route("/battery")
 def battery():
+    if not config.battery_entity:
+        return jsonify({"level": None})
     client_ip = request.remote_addr
     now = time.monotonic()
     last = _battery_request_ts.get(client_ip, 0.0)

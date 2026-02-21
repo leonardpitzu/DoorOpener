@@ -56,9 +56,7 @@ entity_id: str = (_opts.get("entity_id") or "").strip()
 _entity_parts = entity_id.split(".", 1)
 device_name: str = _entity_parts[1] if len(_entity_parts) == 2 else entity_id
 
-battery_entity: str = (
-    _opts.get("battery_entity") or f"sensor.{device_name}_battery"
-).strip()
+battery_entity: str = (_opts.get("battery_entity") or "").strip()
 
 # ---------------------------------------------------------------------------
 # Inline PEM certificate support

@@ -68,6 +68,8 @@ class HAClient:
 
     def get_battery_level(self) -> int | None:
         """Fetch battery percentage (0-100) or ``None``. Cached for 60s."""
+        if not config.battery_entity:
+            return None
         now = time.monotonic()
         if now - self._battery_cache_ts < self._BATTERY_TTL:
             return self._battery_cache
