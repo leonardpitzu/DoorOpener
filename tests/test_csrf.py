@@ -17,7 +17,6 @@ def csrf_client():
     # We import the original from the module's __code__ by re-defining it.
     # Since reset_state runs before each test and sets _check_csrf = lambda: None,
     # we need to bring back the real one.
-    import importlib, types
     # Re-read the real function from the module source
     real_check = None
     for name, obj in vars(app_module).items():
@@ -83,7 +82,6 @@ def test_csrf_wrong_token_rejected(csrf_client):
 
 def test_csrf_valid_token_accepted(csrf_client):
     """POST with correct CSRF token passes CSRF check (may fail on other validation)."""
-    import app as app_module
     _admin_session_with_csrf(csrf_client, csrf_token="good-token")
     r = csrf_client.post(
         "/admin/users",
