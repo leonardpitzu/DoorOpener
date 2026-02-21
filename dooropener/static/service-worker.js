@@ -1,5 +1,5 @@
 /* DoorOpener Service Worker */
-const CACHE_NAME = 'dooropener-cache-v1';
+const CACHE_NAME = 'dooropener-cache-v2';
 const ASSETS = [
   '/',
   '/static/background.jpg',
