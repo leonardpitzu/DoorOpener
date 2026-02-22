@@ -220,15 +220,15 @@ Every response includes:
 ```
 ┌────────────────────────────────────────────────────┐
 │                      app.py                        │
-│           Flask routes & request handling           │
+│           Flask routes & request handling          │
 ├──────────────┬──────────────┬──────────────────────┤
 │ config.py    │ security.py  │ ha_client.py         │
 │ options.json │ RateLimiter  │ HAClient             │
 │ loader       │ headers      │ (requests.Session)   │
 │ timezone     │ validation   │ trigger / battery    │
 ├──────────────┴──────────────┴──────────────────────┤
-│                  users_store.py                     │
-│            JSON-based user management               │
+│                  users_store.py                    │
+│            JSON-based user management              │
 └────────────────────────────────────────────────────┘
 ```
 
