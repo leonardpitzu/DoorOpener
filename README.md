@@ -1,49 +1,45 @@
-# DoorOpener
+# DoorOpener for Home Assistant
 
-A secure web interface for controlling smart door openers via Home Assistant. Features a modern glass-morphism UI with visual keypad, per-user PINs, audio feedback, battery monitoring, and comprehensive brute-force protection.
+A secure web interface for controlling smart door openers via [Home Assistant](https://www.home-assistant.io/) — modern glass-morphism UI with visual keypad, per-user PINs, audio feedback, battery monitoring, and comprehensive brute-force protection.
 
 [![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat-square)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
 
----
-
 <img width="2554" height="1187" alt="image" src="https://github.com/user-attachments/assets/e9e2fd6c-aa32-4ea1-933f-668fad3fbfc4" />
 
 <img width="2554" height="1187" alt="image" src="https://github.com/user-attachments/assets/4d5259fa-ee7b-4d03-a02b-b77301cebf0c" />
 
-## What It Does
+## Features
 
 DoorOpener provides a web-based keypad interface to remotely open doors connected to Home Assistant. Users enter their personal PIN on a visual keypad and the system securely communicates with Home Assistant to trigger the door opener.
 
-**Key Features:**
+- **Visual keypad** — 3×4 keypad interface with auto-submit
+- **Per-user PINs** — individual PINs for each user with JSON-based user management
+- **Audio feedback** — success chimes and failure sounds
+- **Battery monitoring** — real-time battery level for Zigbee devices
+- **Multi-layer security** — rate limiting and IP blocking (see [Security](#security))
+- **Admin UI** — user management and log viewer
+- **Test mode** — safe development without triggering the actual door
+- **Entity support** — Home Assistant `switch`, `lock`, and `input_boolean` entities
 
-- Visual 3×4 keypad interface with auto-submit
-- Individual PINs for each user with JSON-based user management
-- Audio feedback (success chimes, failure sounds)
-- Real-time battery monitoring for Zigbee devices
-- Multi-layer security with rate limiting and IP blocking
-- Admin UI with user management and log viewer
-- Test mode for safe development
-- Supports Home Assistant `switch`, `lock`, and `input_boolean` entities
+## Installation
 
-## Quick Start
+### Home Assistant Add-on (recommended)
 
-### Home Assistant Add-on (Recommended)
-
-1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**.
 2. Paste the repository URL:
    ```
    https://github.com/leonardpitzu/DoorOpener
    ```
-3. Find **DoorOpener** in the store and click **Install**
-4. Configure `entity_id` and `admin_password` in the add-on options
-5. Click **Start** — the panel appears in the sidebar with a door icon
+3. Find **DoorOpener** in the store and click **Install**.
+4. Configure `entity_id` and `admin_password` in the add-on options.
+5. Click **Start** — the panel appears in the sidebar with a door icon.
 
 > When running as an add-on you can leave `ha_url` and `ha_token` empty — the
 > Supervisor API token is used automatically.
 
-### Docker (Development / Testing)
+### Docker
 
 A `Dockerfile.dev` is provided for local testing outside Home Assistant:
 
@@ -65,7 +61,7 @@ docker compose up -d
 
 ## Configuration
 
-### `options.json` (primary config)
+### `options.json`
 
 All application settings live in a single `options.json` file. Copy the example and edit:
 
@@ -93,7 +89,7 @@ cp options.json.example options.json
 ```
 
 | Key | Description | Default |
-|-----|-------------|---------|
+|---|---|---|
 | `ha_url` | Home Assistant base URL | _(required)_ |
 | `ha_token` | Long-lived access token (HA → Profile → Security) | _(required)_ |
 | `entity_id` | Entity to trigger (`switch.*`, `lock.*`, or `input_boolean.*`) | _(required)_ |
@@ -109,7 +105,7 @@ cp options.json.example options.json
 | `session_cookie_secure` | Set `true` when running behind HTTPS | `false` |
 | `ha_cert_pem` | Inline PEM certificate for self-signed HA (see below) | `""` |
 
-### Environment Variables (`.env` file)
+### Environment variables
 
 ```bash
 # Port (optional, overrides options.json)
@@ -130,23 +126,20 @@ FLASK_SECRET_KEY=please-change-me
 SESSION_COOKIE_SECURE=true
 ```
 
-**Configuration priority:** Environment variables > `options.json` defaults.
-
-### PUID/PGID and Permissions
+Configuration priority: environment variables > `options.json` defaults.
 
 The image supports `PUID`, `PGID`, and `UMASK` to avoid host-side `chown`. On startup the entrypoint aligns the runtime user/group to those IDs, ensures `/app/logs` is writable, then drops privileges via `gosu`.
 
 ### Logs
 
 | Log | Location |
-|-----|----------|
+|---|---|
 | Door access / audit log | `/app/logs/log.txt` (bind-mount `./logs:/app/logs`) |
 | Gunicorn / access log | Container stdout/stderr (`docker logs dooropener`) |
 
-## Self-Signed Certificates (Home Assistant)
+### Self-signed certificates
 
-If your Home Assistant uses a self-signed certificate, paste the PEM certificate
-directly into the `ha_cert_pem` option.
+If your Home Assistant uses a self-signed certificate, paste the PEM certificate directly into the `ha_cert_pem` option.
 
 In `options.json`:
 
@@ -165,24 +158,23 @@ ha_cert_pem: |-
   -----END CERTIFICATE-----
 ```
 
-The certificate is written to a temporary file at startup and used for all
-Home Assistant API calls.
+The certificate is written to a temporary file at startup and used for all Home Assistant API calls.
 
 > **Note:** The hostname in `ha_url` must match a Subject Alternative Name in the certificate.
 
 ## Usage
 
-1. **Access interface** — visit `http://localhost:6532`
-2. **Enter PIN** — use the visual keypad (4–8 digit PIN)
-3. **Auto-submit** — the door opens automatically when a valid-length PIN is entered
-4. **Admin access** — click the gear icon for the admin dashboard
+1. **Access interface** — visit `http://localhost:6532`.
+2. **Enter PIN** — use the visual keypad (4–8 digit PIN).
+3. **Auto-submit** — the door opens automatically when a valid-length PIN is entered.
+4. **Admin access** — click the gear icon for the admin dashboard.
 
 ## Security
 
-### Protection Layers
+### Protection layers
 
 | Layer | Description |
-|-------|-------------|
+|---|---|
 | **IP rate limiting** | Blocks an IP after `max_attempts` failures for `block_time_minutes` |
 | **Session rate limiting** | Blocks a browser session after `session_max_attempts` failures |
 | **Global rate limiting** | Caps total failed attempts system-wide to `max_global_attempts_per_hour` |
@@ -193,7 +185,7 @@ Home Assistant API calls.
 | **Security headers** | CSP, X-Frame-Options DENY, HSTS referral, no-sniff, etc. |
 | **Bot detection** | Obvious bot/crawler/spider user-agents are rejected |
 
-### Security Headers
+### Security headers
 
 Every response includes:
 
@@ -205,10 +197,10 @@ Every response includes:
 - `Permissions-Policy` — geolocation, camera, microphone disabled
 - `Cache-Control: no-store`
 
-## API Endpoints
+## API endpoints
 
 | Method | Path | Description |
-|--------|------|-------------|
+|---|---|---|
 | `GET` | `/` | Main keypad interface |
 | `POST` | `/open-door` | Validate PIN and trigger door entity |
 | `GET` | `/battery` | Battery level JSON (`{"level": 85}`) |
@@ -241,7 +233,7 @@ Every response includes:
 ```
 
 | Module | Responsibility |
-|--------|---------------|
+|---|---|
 | `dooropener/config.py` | Loads `options.json`, exposes all settings as module attributes, timezone handling via `zoneinfo` |
 | `dooropener/security.py` | `RateLimiter` class (IP / session / global), security headers, bot detection, PIN validation |
 | `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` — dispatches `switch`/`lock`/`input_boolean` services |
@@ -255,7 +247,7 @@ Every response includes:
 - Python 3.12+
 - An `options.json` file (copy from `options.json.example`)
 
-### Local Setup
+### Local setup
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -264,7 +256,7 @@ cp options.json.example options.json   # edit as needed
 python app.py
 ```
 
-### Running Tests
+### Running tests
 
 ```bash
 pytest --tb=short -q
@@ -276,31 +268,27 @@ With coverage:
 pytest --cov=./ --cov-report=term-missing --cov-fail-under=75
 ```
 
-### Linting & Security
+### Linting & security
 
 ```bash
 ruff check .          # lint
 bandit -r . -x tests  # security scan
 ```
 
-### Test Mode
+### Test mode
 
 Set `"test_mode": true` in `options.json` to test the interface without actually triggering the door in Home Assistant.
 
 ## CI / CD
 
-### GitHub Actions
-
 The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
 
 | Job | Tool | Purpose |
-|-----|------|---------|
+|---|---|---|
 | **Tests** | pytest + pytest-cov | Unit/integration tests, 75 % coverage gate |
 | **Lint** | ruff | Code style and import checks |
 | **Security** | bandit | Static security analysis |
 | **Docker** | docker build | Smoke-test the dev container image |
-
-### Dependabot
 
 Weekly pull requests for dependency updates are configured via `.github/dependabot.yml`:
 
@@ -309,4 +297,4 @@ Weekly pull requests for dependency updates are configured via `.github/dependab
 
 ## License
 
-Open source — see repository for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
