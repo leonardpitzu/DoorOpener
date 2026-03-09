@@ -919,12 +919,40 @@
         }
 
 
+        // --- Version check ---
+        function _compareVersions(a, b) {
+            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+            for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                const na = pa[i] || 0, nb = pb[i] || 0;
+                if (na > nb) return 1;
+                if (na < nb) return -1;
+            }
+            return 0;
+        }
+
+        function checkForUpdate() {
+            const currentVersion = '{{ app_version }}';
+            if (!currentVersion || currentVersion === '0.0.0') return;
+            fetch('https://api.github.com/repos/Sloth-on-meth/DoorOpener/releases/latest', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(data => {
+                    const latest = (data.tag_name || '').replace(/^v/, '');
+                    if (latest && _compareVersions(latest, currentVersion) > 0) {
+                        showStatus('Update available: v' + latest + ' (current: v' + currentVersion + ')', 'info', true);
+                    }
+                })
+                .catch(() => { /* silently ignore */ });
+        }
+
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', function () {
             // Register service worker for PWA install/offline support
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('/service-worker.js').catch(() => { /* ignore */ });
             }
+
+            // Check for updates
+            checkForUpdate();
             {% if battery_enabled %}
             // Initial battery level fetch, then poll every 60s
             fetchBatteryLevel();

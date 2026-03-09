@@ -42,6 +42,16 @@ from config import get_current_time
 from users_store import UsersStore
 
 # ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+_version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+try:
+    with open(_version_file, encoding="utf-8") as _f:
+        APP_VERSION = _f.read().strip()
+except FileNotFoundError:
+    APP_VERSION = "0.0.0"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log_dir = os.environ.get("DOOROPENER_LOG_DIR") or os.path.join(
@@ -179,7 +189,7 @@ def after_request(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), battery_enabled=bool(config.battery_entity))
+    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), battery_enabled=bool(config.battery_entity), app_version=APP_VERSION)
 
 
 @app.route("/service-worker.js")
@@ -279,6 +289,14 @@ def open_door():
         matched_user = users_store.lookup_pin(validated_pin)
 
         if not matched_user:
+            # Check if PIN belongs to a disabled account (don't count as failed attempt)
+            disabled_user = users_store.find_disabled_user_by_pin(validated_pin)
+            if disabled_user:
+                _audit(primary_ip, session_id, disabled_user, "DISABLED",
+                       "Login attempt on disabled account")
+                return jsonify({"status": "error",
+                                "message": "Your account has been disabled. Please contact the administrator."}), 403
+
             reason_key, remaining_attempts = rate_limiter.record_failure(
                 identifier, session_id
             )
@@ -350,7 +368,7 @@ def open_door():
 # ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin():
-    return render_template("admin.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""))
+    return render_template("admin.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), app_version=APP_VERSION)
 
 
 @app.route("/admin/auth", methods=["POST"])

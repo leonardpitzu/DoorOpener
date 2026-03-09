@@ -905,8 +905,36 @@
             dash.classList.toggle('compact', enabled);
         }
 
+        // --- Version check ---
+        function _compareVersions(a, b) {
+            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+            for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                const na = pa[i] || 0, nb = pb[i] || 0;
+                if (na > nb) return 1;
+                if (na < nb) return -1;
+            }
+            return 0;
+        }
+
+        function checkForUpdate() {
+            const currentVersion = '{{ app_version }}';
+            if (!currentVersion || currentVersion === '0.0.0') return;
+            fetch('https://api.github.com/repos/Sloth-on-meth/DoorOpener/releases/latest', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(data => {
+                    const latest = (data.tag_name || '').replace(/^v/, '');
+                    if (latest && _compareVersions(latest, currentVersion) > 0) {
+                        showToast('Update available: v' + latest + ' (current: v' + currentVersion + ')', 'info', true);
+                    }
+                })
+                .catch(() => { /* silently ignore */ });
+        }
+
         // Load logs on page load
-        document.addEventListener('DOMContentLoaded', loadLogs);
+        document.addEventListener('DOMContentLoaded', function() {
+            loadLogs();
+            checkForUpdate();
+        });
 
         // Tabs logic
         function switchTab(tab) {

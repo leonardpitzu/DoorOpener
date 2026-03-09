@@ -166,7 +166,9 @@ def add_security_headers(response, csp_nonce: str | None = None):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = (
         "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
-        "magnetometer=(), gyroscope=(), fullscreen=(self)"
+        "magnetometer=(), gyroscope=(), fullscreen=(self), "
+        "browsing-topics=(), run-ad-auction=(), join-ad-interest-group=(), "
+        "private-aggregation=(), attribution-reporting=(), compute-pressure=()"
     )
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
@@ -179,7 +181,7 @@ def add_security_headers(response, csp_nonce: str | None = None):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self'; "
-            "connect-src 'self'; "
+            "connect-src 'self' https://api.github.com; "
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
     else:
@@ -189,7 +191,7 @@ def add_security_headers(response, csp_nonce: str | None = None):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self'; "
-            "connect-src 'self'; "
+            "connect-src 'self' https://api.github.com; "
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
     response.headers["Cache-Control"] = (

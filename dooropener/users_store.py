@@ -1,5 +1,7 @@
+import hmac
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -53,11 +55,20 @@ class UsersStore:
     def _save_atomic(self) -> None:
         dir_name = os.path.dirname(self.path)
         os.makedirs(dir_name, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-", dir=dir_name)
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-", dir=dir_name)
+        except PermissionError:
+            # Fallback: write temp file in system temp dir (e.g. read-only target)
+            fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
+            try:
+                os.replace(tmp, self.path)
+            except OSError:
+                # Cross-device rename: copy content then remove temp
+                shutil.copy2(tmp, self.path)
+                os.remove(tmp)
         except BaseException:
             try:
                 os.remove(tmp)
@@ -84,6 +95,17 @@ class UsersStore:
     def lookup_pin(self, pin: str) -> str | None:
         """Return username for *pin*, or ``None`` if no match."""
         return self.get_pin_map().get(pin)
+
+    def find_disabled_user_by_pin(self, pin: str) -> str | None:
+        """Return username if *pin* belongs to a disabled account, else ``None``."""
+        self._ensure_loaded()
+        for user, meta in self.data.get("users", {}).items():
+            stored_pin = meta.get("pin", "")
+            if not (isinstance(stored_pin, str) and 4 <= len(stored_pin) <= 8 and stored_pin.isdigit()):
+                continue
+            if not bool(meta.get("active", True)) and hmac.compare_digest(stored_pin, pin):
+                return user
+        return None
 
     def list_users(self, include_pins: bool = False) -> Dict[str, Any]:
         self._ensure_loaded()
