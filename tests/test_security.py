@@ -208,6 +208,21 @@ def test_open_door_success_input_boolean(_client, app_module, monkeypatch):
         assert r.status_code == 200
 
 
+def test_open_door_success_button(_client, app_module, monkeypatch):
+    import config
+    app_module.users_store.create_user("alice", "1234")
+    monkeypatch.setattr(config, "entity_id", "button.gate_open")
+    monkeypatch.setattr(config, "test_mode", False)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = lambda: None
+    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp):
+        r = _client.post(
+            "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
+        )
+        assert r.status_code == 200
+
+
 def test_battery_invalid_format(_client, app_module):
     mock_response = MagicMock()
     mock_response.status_code = 200

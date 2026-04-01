@@ -21,7 +21,7 @@ DoorOpener provides a web-based keypad interface to remotely open doors connecte
 - **Multi-layer security** — rate limiting and IP blocking (see [Security](#security))
 - **Admin UI** — user management and log viewer
 - **Test mode** — safe development without triggering the actual door
-- **Entity support** — Home Assistant `switch`, `lock`, and `input_boolean` entities
+- **Entity support** — Home Assistant `switch`, `lock`, `input_boolean`, and `button` entities
 
 ## Installation
 
@@ -92,7 +92,7 @@ cp options.json.example options.json
 |---|---|---|
 | `ha_url` | Home Assistant base URL | _(required)_ |
 | `ha_token` | Long-lived access token (HA → Profile → Security) | _(required)_ |
-| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, or `input_boolean.*`) | _(required)_ |
+| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | _(required)_ |
 | `battery_entity` | Battery sensor entity for monitoring | auto-derived |
 | `port` | Web server port (overridden by `DOOROPENER_PORT` env var) | `6532` |
 | `test_mode` | When `true`, simulates door actions without calling HA | `false` |
@@ -236,7 +236,7 @@ Every response includes:
 |---|---|
 | `dooropener/config.py` | Loads `options.json`, exposes all settings as module attributes, timezone handling via `zoneinfo` |
 | `dooropener/security.py` | `RateLimiter` class (IP / session / global), security headers, bot detection, PIN validation |
-| `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` — dispatches `switch`/`lock`/`input_boolean` services |
+| `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` — dispatches `switch`/`lock`/`input_boolean`/`button` services |
 | `dooropener/users_store.py` | Atomic JSON-based user CRUD with usage tracking |
 | `dooropener/app.py` | Flask app, route handlers, audit logging |
 

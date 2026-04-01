@@ -45,6 +45,8 @@ class HAClient:
             service = "lock/unlock"
         elif eid.startswith("input_boolean."):
             service = "input_boolean/turn_on"
+        elif eid.startswith("button."):
+            service = "button/press"
         else:
             service = "switch/turn_on"
 

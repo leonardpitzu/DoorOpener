@@ -18,7 +18,7 @@ A secure web interface for controlling smart door openers via Home Assistant.
 |--------|-------------|----------|
 | `ha_url` | Home Assistant URL (default uses Supervisor API) | No |
 | `ha_token` | Long-lived access token (leave empty to use Supervisor token) | No |
-| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, or `input_boolean.*`) | **Yes** |
+| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | **Yes** |
 | `battery_entity` | Battery sensor entity for monitoring | No |
 | `admin_password` | Password for the admin dashboard | **Yes** |
 | `test_mode` | Simulate door actions without calling HA | No |
