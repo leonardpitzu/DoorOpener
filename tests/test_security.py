@@ -34,11 +34,12 @@ def test_security_headers_on_index(_client):
     for h in [
         "X-Content-Type-Options",
         "X-Frame-Options",
-        "X-XSS-Protection",
         "Referrer-Policy",
         "Content-Security-Policy",
     ]:
         assert h in resp.headers
+    # X-XSS-Protection is intentionally not set (superseded by CSP)
+    assert "X-XSS-Protection" not in resp.headers
 
 
 def test_suspicious_request_blocked_open_door(_client):

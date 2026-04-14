@@ -162,7 +162,6 @@ def add_security_headers(response, csp_nonce: str | None = None):
     """Attach hardening headers to every response."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "0"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = (
         "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "

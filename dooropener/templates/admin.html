@@ -311,7 +311,15 @@
             <div id="loginError" style="color: #c62828; margin-top: 1rem; display: none;"></div>
         </div>
 
-        <div id="dashboard" style="display: none;">
+        {% if test_mode %}
+        <div style="border-radius:12px;max-width:700px;margin:0 auto 1.5rem;padding:1rem 1.5rem;border:2px solid #ffb300;background:rgba(255,179,0,0.12);text-align:center;">
+            <strong style="color:#ffb300;">&#9888; TEST MODE ENABLED</strong>
+            <div style="color:rgba(0,0,0,0.7);margin-top:0.4rem;font-size:0.95em;">The door will <b>not</b> actually open. Disable <code>test_mode</code> in <code>options.json</code> before production use.</div>
+        </div>
+        {% endif %}
+
+        {% if is_authenticated %}
+        <div id="dashboard" style="display: block;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
                 <h1>🔐 Admin Dashboard</h1>
                 <button id="logoutBtn" style="padding: 8px 16px; background: linear-gradient(135deg, #f44336, #d32f2f); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Logout</button>
@@ -444,29 +452,8 @@
                 });
                 const data = await res.json();
                 if (data.status === 'success') {
-                    // Confirm session established before requesting logs
-                    const check = await fetch('/admin/check-auth', { credentials: 'same-origin', cache: 'no-store' });
-                    const checkData = await check.json();
-                    if (checkData.authenticated) {
-                        isAuthenticated = true;
-                        document.getElementById('loginForm').style.display = 'none';
-                        document.getElementById('dashboard').style.display = 'block';
-                        await Promise.all([loadLogs(), loadUsers()]);
-                    } else {
-                        // Small retry if cookie not visible yet
-                        await new Promise(r => setTimeout(r, 150));
-                        const check2 = await fetch('/admin/check-auth', { credentials: 'same-origin', cache: 'no-store' });
-                        const checkData2 = await check2.json();
-                        if (checkData2.authenticated) {
-                            isAuthenticated = true;
-                            document.getElementById('loginForm').style.display = 'none';
-                            document.getElementById('dashboard').style.display = 'block';
-                            await Promise.all([loadLogs(), loadUsers()]);
-                        } else {
-                            errorDiv.textContent = 'Login succeeded but session not established. Please try again.';
-                            errorDiv.style.display = 'block';
-                        }
-                    }
+                    // Reload the page so the server renders the full dashboard HTML
+                    window.location.reload();
                 } else {
                     errorDiv.textContent = 'Invalid admin password';
                     errorDiv.style.display = 'block';
@@ -479,17 +466,12 @@
 
         // Check if already authenticated on page load
         async function checkAuthentication() {
-            try {
-                const res = await fetch('/admin/check-auth', { credentials: 'same-origin', cache: 'no-store' });
-                const data = await res.json();
-                if (data.authenticated) {
-                    isAuthenticated = true;
-                    document.getElementById('loginForm').style.display = 'none';
-                    document.getElementById('dashboard').style.display = 'block';
-                    await Promise.all([loadLogs(), loadUsers()]);
-                }
-            } catch (e) {
-                // Silent fail - user not authenticated
+            const dash = document.getElementById('dashboard');
+            if (dash && dash.style.display !== 'none') {
+                // Server already rendered the dashboard — we're authenticated
+                isAuthenticated = true;
+                document.getElementById('loginForm').style.display = 'none';
+                await Promise.all([loadLogs(), loadUsers()]);
             }
         }
 
@@ -930,10 +912,13 @@
                 .catch(() => { /* silently ignore */ });
         }
 
-        // Load logs on page load
+        // Load logs on page load (only if dashboard exists and is visible)
         document.addEventListener('DOMContentLoaded', function() {
-            loadLogs();
-            checkForUpdate();
+            const dash = document.getElementById('dashboard');
+            if (dash && dash.style.display !== 'none') {
+                loadLogs();
+                checkForUpdate();
+            }
         });
 
         // Tabs logic
@@ -992,29 +977,42 @@
         }
 
         // --- Bind all event listeners (replaces inline handlers) ---
-        document.getElementById('loginBtn').addEventListener('click', login);
-        document.getElementById('logoutBtn').addEventListener('click', logout);
-        document.getElementById('tabLogsBtn').addEventListener('click', () => switchTab('logs'));
-        document.getElementById('tabUsersBtn').addEventListener('click', () => switchTab('users'));
-        document.getElementById('sortBy').addEventListener('change', sortLogs);
-        document.getElementById('filterUser').addEventListener('change', filterLogs);
-        document.getElementById('filterStatus').addEventListener('change', filterLogs);
-        document.getElementById('compactToggle').addEventListener('change', (e) => toggleCompact(e));
-        document.getElementById('refreshLogsBtn').addEventListener('click', loadLogs);
-        document.getElementById('btnClearAll').addEventListener('click', () => openClearAll('btnClearAll'));
-        document.getElementById('addUserBtn').addEventListener('click', openAddUser);
+        // Helper: bind only if element exists (dashboard elements may not be rendered)
+        function _bind(id, event, fn) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener(event, fn);
+        }
+        _bind('loginBtn', 'click', login);
+        _bind('logoutBtn', 'click', logout);
+        _bind('tabLogsBtn', 'click', () => switchTab('logs'));
+        _bind('tabUsersBtn', 'click', () => switchTab('users'));
+        _bind('sortBy', 'change', sortLogs);
+        _bind('filterUser', 'change', filterLogs);
+        _bind('filterStatus', 'change', filterLogs);
+        _bind('compactToggle', 'change', (e) => toggleCompact(e));
+        _bind('refreshLogsBtn', 'click', loadLogs);
+        _bind('btnClearAll', 'click', () => openClearAll('btnClearAll'));
+        _bind('addUserBtn', 'click', openAddUser);
 
         // Event delegation for dynamically rendered user-action buttons
-        document.getElementById('usersTableBody').addEventListener('click', (e) => {
-            const btn = e.target.closest('[data-action]');
-            if (!btn) return;
-            const action = btn.dataset.action;
-            const user = btn.dataset.user;
-            if (action === 'edit') openEditUser(user);
-            else if (action === 'toggle') toggleActive(user, btn.dataset.active === 'true');
-            else if (action === 'delete') deleteUser(user);
-        });
+        (function() {
+            const tbody = document.getElementById('usersTableBody');
+            if (tbody) {
+                tbody.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-action]');
+                    if (!btn) return;
+                    const action = btn.dataset.action;
+                    const user = btn.dataset.user;
+                    if (action === 'edit') openEditUser(user);
+                    else if (action === 'toggle') toggleActive(user, btn.dataset.active === 'true');
+                    else if (action === 'delete') deleteUser(user);
+                });
+            }
+        })();
     </script>
+    {% else %}
+        <div id="dashboard" style="display: none;"></div>
+    {% endif %}
     <div id="toast-container"></div>
 </body>
 </html>

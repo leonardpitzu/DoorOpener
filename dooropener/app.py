@@ -368,7 +368,20 @@ def open_door():
 # ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin():
-    return render_template("admin.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), app_version=APP_VERSION)
+    is_authenticated = bool(session.get("admin_authenticated"))
+    return render_template(
+        "admin.html",
+        csp_nonce=g.csp_nonce,
+        csrf_token=session.get("_csrf_token", ""),
+        app_version=APP_VERSION,
+        is_authenticated=is_authenticated,
+        test_mode=config.test_mode,
+    )
+
+
+# IP-based admin auth rate limiting
+_admin_ip_failed: dict[str, int] = {}
+_admin_ip_blocked_until: dict[str, object] = {}
 
 
 @app.route("/admin/auth", methods=["POST"])
@@ -381,6 +394,14 @@ def admin_auth():
     remember_me = data.get("remember_me", False) if data else False
     primary_ip, session_id, identifier = get_client_identifier()
     now = get_current_time()
+
+    # Check IP-based block (catches multi-session brute force)
+    if _admin_ip_blocked_until.get(primary_ip) and now < _admin_ip_blocked_until[primary_ip]:
+        remaining = (_admin_ip_blocked_until[primary_ip] - now).total_seconds()
+        _audit(primary_ip, session_id, "ADMIN", "ADMIN_IP_BLOCKED",
+               f"Admin auth IP blocked for {int(remaining)}s")
+        return jsonify({"status": "error",
+                        "message": "Too many failed attempts. Please try later."}), 429
 
     if (
         rate_limiter.session_blocked_until.get(session_id)
@@ -395,6 +416,8 @@ def admin_auth():
     if hmac.compare_digest(password, config.admin_password):
         rate_limiter.session_failed.pop(session_id, None)
         rate_limiter.session_blocked_until.pop(session_id, None)
+        _admin_ip_failed.pop(primary_ip, None)
+        _admin_ip_blocked_until.pop(primary_ip, None)
         session["admin_authenticated"] = True
         session["admin_login_time"] = now.isoformat()
         if remember_me:
@@ -404,11 +427,16 @@ def admin_auth():
         _audit(primary_ip, session_id, "ADMIN", "ADMIN_SUCCESS", "Admin login")
         return jsonify({"status": "success"})
 
-    # Failure
+    # Failure — track per-session AND per-IP
     rate_limiter.session_failed[session_id] = rate_limiter.session_failed.get(session_id, 0) + 1
+    _admin_ip_failed[primary_ip] = _admin_ip_failed.get(primary_ip, 0) + 1
     if rate_limiter.session_failed[session_id] >= config.SESSION_MAX_ATTEMPTS:
         rate_limiter.session_blocked_until[session_id] = now + config.BLOCK_TIME
         details = (f"Invalid admin password. Session blocked for "
+                    f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
+    elif _admin_ip_failed[primary_ip] >= config.SESSION_MAX_ATTEMPTS:
+        _admin_ip_blocked_until[primary_ip] = now + config.BLOCK_TIME
+        details = (f"Invalid admin password. IP blocked for "
                     f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
     else:
         remaining = config.SESSION_MAX_ATTEMPTS - rate_limiter.session_failed[session_id]
@@ -669,8 +697,19 @@ def admin_users_delete(username: str):
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    if config.test_mode:
+        logger.warning(
+            "TEST MODE ENABLED — the door will NOT open. "
+            "Disable test_mode in options.json before deploying to production."
+        )
+    _debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    if _debug:
+        logger.warning(
+            "FLASK_DEBUG is enabled — the Werkzeug interactive debugger is active. "
+            "This allows remote code execution via the browser. NEVER enable in production."
+        )
     app.run(
         host="0.0.0.0",  # nosec B104
         port=config.server_port,
-        debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
+        debug=_debug,
     )
