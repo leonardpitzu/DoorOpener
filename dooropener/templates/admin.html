@@ -419,6 +419,9 @@
             </div>
         </div>
     </div>
+    {% else %}
+        <div id="dashboard" style="display: none;"></div>
+    {% endif %}
 
     <script nonce="{{ csp_nonce }}">
         let allLogs = [];
@@ -1010,9 +1013,6 @@
             }
         })();
     </script>
-    {% else %}
-        <div id="dashboard" style="display: none;"></div>
-    {% endif %}
     <div id="toast-container"></div>
 </body>
 </html>
