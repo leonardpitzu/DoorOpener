@@ -42,3 +42,6 @@ logs/
 .env
 *.log
 users.json.commitmsg
+
+# Agent memory (local only — never publish)
+AGENTS.md
