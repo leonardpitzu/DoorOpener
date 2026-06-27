@@ -1,11 +1,11 @@
-# DoorOpener — Home Assistant Add-on
+# DoorOpener - Home Assistant Add-on
 
 A secure web interface for controlling smart door openers via Home Assistant.
 
 ## Installation
 
 1. Add this repository to your Home Assistant add-on store:
-   **Settings → Add-ons → Add-on Store → ⋮ → Repositories** → paste:
+   **Settings -> Add-ons -> Add-on Store -> ⋮ -> Repositories** -> paste:
    ```
    https://github.com/leonardpitzu/DoorOpener
    ```
@@ -36,12 +36,12 @@ the ingress URL. Enter your PIN on the visual keypad to open the door.
 
 Open the admin panel (gear icon), log in with your `admin_password`, and use
 the **Users** tab to create, edit, or deactivate users. Each user gets a
-unique 4–8 digit PIN.
+unique 4-8 digit PIN.
 
 ## Data Storage
 
 All add-on data is stored in `/data/` (persisted across restarts):
 
-- `options.json` — configuration (managed by HA)
-- `users.json` — user database
-- `logs/log.txt` — audit log
+- `options.json` - configuration (managed by HA)
+- `users.json` - user database
+- `logs/log.txt` - audit log

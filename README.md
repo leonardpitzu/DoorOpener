@@ -1,6 +1,6 @@
 # DoorOpener for Home Assistant
 
-A secure web interface for controlling smart door openers via [Home Assistant](https://www.home-assistant.io/) — modern glass-morphism UI with visual keypad, per-user PINs, audio feedback, battery monitoring, and comprehensive brute-force protection.
+A secure web interface for controlling smart door openers via [Home Assistant](https://www.home-assistant.io/) - modern glass-morphism UI with visual keypad, per-user PINs, audio feedback, battery monitoring, and brute-force protection.
 
 [![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat-square)
@@ -14,29 +14,29 @@ A secure web interface for controlling smart door openers via [Home Assistant](h
 
 DoorOpener provides a web-based keypad interface to remotely open doors connected to Home Assistant. Users enter their personal PIN on a visual keypad and the system securely communicates with Home Assistant to trigger the door opener.
 
-- **Visual keypad** — 3×4 keypad interface with auto-submit
-- **Per-user PINs** — individual PINs for each user with JSON-based user management
-- **Audio feedback** — success chimes and failure sounds
-- **Battery monitoring** — real-time battery level for Zigbee devices
-- **Multi-layer security** — rate limiting and IP blocking (see [Security](#security))
-- **Admin UI** — user management and log viewer
-- **Test mode** — safe development without triggering the actual door
-- **Entity support** — Home Assistant `switch`, `lock`, `input_boolean`, and `button` entities
+- **Visual keypad** - 3×4 keypad interface with auto-submit
+- **Per-user PINs** - individual PINs for each user with JSON-based user management
+- **Audio feedback** - success chimes and failure sounds
+- **Battery monitoring** - real-time battery level for Zigbee devices
+- **Multi-layer security** - rate limiting and IP blocking (see [Security](#security))
+- **Admin UI** - user management and log viewer
+- **Test mode** - safe development without triggering the actual door
+- **Entity support** - Home Assistant `switch`, `lock`, `input_boolean`, and `button` entities
 
 ## Installation
 
 ### Home Assistant Add-on (recommended)
 
-1. In Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**.
+1. In Home Assistant go to **Settings -> Add-ons -> Add-on Store -> ⋮ -> Repositories**.
 2. Paste the repository URL:
    ```
    https://github.com/leonardpitzu/DoorOpener
    ```
 3. Find **DoorOpener** in the store and click **Install**.
 4. Configure `entity_id` and `admin_password` in the add-on options.
-5. Click **Start** — the panel appears in the sidebar with a door icon.
+5. Click **Start** - the panel appears in the sidebar with a door icon.
 
-> When running as an add-on you can leave `ha_url` and `ha_token` empty — the
+> When running as an add-on you can leave `ha_url` and `ha_token` empty - the
 > Supervisor API token is used automatically.
 
 ### Docker
@@ -91,7 +91,7 @@ cp options.json.example options.json
 | Key | Description | Default |
 |---|---|---|
 | `ha_url` | Home Assistant base URL | _(required)_ |
-| `ha_token` | Long-lived access token (HA → Profile → Security) | _(required)_ |
+| `ha_token` | Long-lived access token (HA -> Profile -> Security) | _(required)_ |
 | `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | _(required)_ |
 | `battery_entity` | Battery sensor entity for monitoring | auto-derived |
 | `port` | Web server port (overridden by `DOOROPENER_PORT` env var) | `6532` |
@@ -149,7 +149,7 @@ In `options.json`:
 }
 ```
 
-In the HA add-on YAML config (Settings → Add-ons → DoorOpener → Configuration):
+In the HA add-on YAML config (Settings -> Add-ons -> DoorOpener -> Configuration):
 
 ```yaml
 ha_cert_pem: |-
@@ -164,10 +164,10 @@ The certificate is written to a temporary file at startup and used for all Home 
 
 ## Usage
 
-1. **Access interface** — visit `http://localhost:6532`.
-2. **Enter PIN** — use the visual keypad (4–8 digit PIN).
-3. **Auto-submit** — the door opens automatically when a valid-length PIN is entered.
-4. **Admin access** — click the gear icon for the admin dashboard.
+1. **Access interface** - visit `http://localhost:6532`.
+2. **Enter PIN** - use the visual keypad (4-8 digit PIN).
+3. **Auto-submit** - the door opens automatically when a valid-length PIN is entered.
+4. **Admin access** - click the gear icon for the admin dashboard.
 
 ## Security
 
@@ -178,7 +178,7 @@ The certificate is written to a temporary file at startup and used for all Home 
 | **IP rate limiting** | Blocks an IP after `max_attempts` failures for `block_time_minutes` |
 | **Session rate limiting** | Blocks a browser session after `session_max_attempts` failures |
 | **Global rate limiting** | Caps total failed attempts system-wide to `max_global_attempts_per_hour` |
-| **Progressive delay info** | Exponential back-off metadata (1 s → 16 s) returned to the client |
+| **Progressive delay info** | Exponential back-off metadata (1 s -> 16 s) returned to the client |
 | **Persistent cookie block** | Block state survives page reloads via a session cookie |
 | **Audit logging** | Every attempt logged with timestamp, IP, session, user, and result |
 | **Input validation** | PIN format and request body validated before processing |
@@ -189,12 +189,12 @@ The certificate is written to a temporary file at startup and used for all Home 
 
 Every response includes:
 
-- `Content-Security-Policy` — strict self-only policy
+- `Content-Security-Policy` - strict self-only policy
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: DENY`
 - `X-XSS-Protection: 1; mode=block`
 - `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy` — geolocation, camera, microphone disabled
+- `Permissions-Policy` - geolocation, camera, microphone disabled
 - `Cache-Control: no-store`
 
 ## API endpoints
@@ -236,7 +236,7 @@ Every response includes:
 |---|---|
 | `dooropener/config.py` | Loads `options.json`, exposes all settings as module attributes, timezone handling via `zoneinfo` |
 | `dooropener/security.py` | `RateLimiter` class (IP / session / global), security headers, bot detection, PIN validation |
-| `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` — dispatches `switch`/`lock`/`input_boolean`/`button` services |
+| `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` - dispatches `switch`/`lock`/`input_boolean`/`button` services |
 | `dooropener/users_store.py` | Atomic JSON-based user CRUD with usage tracking |
 | `dooropener/app.py` | Flask app, route handlers, audit logging |
 
@@ -292,9 +292,9 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
 
 Weekly pull requests for dependency updates are configured via `.github/dependabot.yml`:
 
-- **pip** dependencies — every Monday
-- **GitHub Actions** versions — every Monday
+- **pip** dependencies - every Monday
+- **GitHub Actions** versions - every Monday
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
