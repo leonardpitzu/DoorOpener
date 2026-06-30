@@ -647,6 +647,8 @@ def admin_users_create():
         return jsonify({"error": "User already exists"}), 409
     except ValueError as ve:
         logger.warning("ValueError creating user '%s': %s", username, ve)
+        if str(ve) == "PIN already in use":
+            return jsonify({"error": "PIN already in use"}), 409
         return jsonify({"error": "Invalid input"}), 400
     except Exception as e:
         logger.error("Error creating user: %s", e)
@@ -669,6 +671,8 @@ def admin_users_update(username: str):
         return jsonify({"error": "User not found"}), 404
     except ValueError as ve:
         logger.warning("ValueError updating user '%s': %s", username, ve)
+        if str(ve) == "PIN already in use":
+            return jsonify({"error": "PIN already in use"}), 409
         return jsonify({"error": "Invalid input"}), 400
     except Exception as e:
         logger.error("Error updating user: %s", e)

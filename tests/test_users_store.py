@@ -57,6 +57,17 @@ def test_create_duplicate_user(users_store):
     assert len(users) == 1
 
 
+def test_create_duplicate_pin(users_store):
+    """Test that creating a user with an in-use PIN fails."""
+    users_store.create_user("alice", "1234")
+
+    with pytest.raises(ValueError, match="PIN already in use"):
+        users_store.create_user("bob", "1234")
+
+    users = users_store.list_users()["users"]
+    assert len(users) == 1
+
+
 def test_update_user(users_store):
     """Test updating an existing user."""
     users_store.create_user("testuser", "1234")
@@ -66,6 +77,24 @@ def test_update_user(users_store):
     users = users_store.list_users()["users"]
     user = users[0]
     assert user["active"] is False
+
+
+def test_update_duplicate_pin(users_store):
+    """Test that updating a user to an in-use PIN fails."""
+    users_store.create_user("alice", "1234")
+    users_store.create_user("bob", "5678")
+
+    with pytest.raises(ValueError, match="PIN already in use"):
+        users_store.update_user("bob", pin="1234")
+
+
+def test_update_user_keeps_own_pin(users_store):
+    """Test that re-setting a user's own PIN is not flagged as a duplicate."""
+    users_store.create_user("alice", "1234")
+
+    users_store.update_user("alice", pin="1234", active=False)
+
+    assert users_store.lookup_pin("1234") is None  # inactive -> not in active map
 
 
 def test_update_nonexistent_user(users_store):

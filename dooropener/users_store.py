@@ -141,6 +141,20 @@ class UsersStore:
     def _validate_pin(pin: str) -> bool:
         return isinstance(pin, str) and pin.isdigit() and 4 <= len(pin) <= 8
 
+    def _pin_in_use(self, pin: str, exclude: Optional[str] = None) -> bool:
+        """Return ``True`` if *pin* is already assigned to another user.
+
+        Checks all users (active or not) to prevent collisions in the
+        ``{pin: username}`` reverse map. *exclude* skips the user being updated.
+        """
+        for user, meta in self.data.get("users", {}).items():
+            if user == exclude:
+                continue
+            stored_pin = meta.get("pin", "")
+            if isinstance(stored_pin, str) and hmac.compare_digest(stored_pin, pin):
+                return True
+        return False
+
     def create_user(self, username: str, pin: str, active: bool = True) -> None:
         self._ensure_loaded()
         if not self._validate_username(username):
@@ -149,6 +163,8 @@ class UsersStore:
             raise ValueError("Invalid pin")
         if username in self.data["users"]:
             raise KeyError("User already exists")
+        if self._pin_in_use(pin):
+            raise ValueError("PIN already in use")
         now = _now_iso()
         self.data["users"][username] = {
             "pin": pin,
@@ -168,6 +184,8 @@ class UsersStore:
             raise KeyError("User not found")
         if pin is not None and not self._validate_pin(pin):
             raise ValueError("Invalid pin")
+        if pin is not None and self._pin_in_use(pin, exclude=username):
+            raise ValueError("PIN already in use")
         if active is not None:
             active = bool(active)
         meta = self.data["users"][username]

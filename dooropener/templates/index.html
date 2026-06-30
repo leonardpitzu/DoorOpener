@@ -954,9 +954,31 @@
             // Check for updates
             checkForUpdate();
             {% if battery_enabled %}
-            // Initial battery level fetch, then poll every 60s
-            fetchBatteryLevel();
-            setInterval(fetchBatteryLevel, 60000);
+            // Initial battery level fetch, then poll every 60s while the tab is
+            // visible. A backgrounded tab pauses polling and refetches on reveal.
+            let batteryPollTimer = null;
+            function startBatteryPolling() {
+                if (batteryPollTimer === null) {
+                    fetchBatteryLevel();
+                    batteryPollTimer = setInterval(fetchBatteryLevel, 60000);
+                }
+            }
+            function stopBatteryPolling() {
+                if (batteryPollTimer !== null) {
+                    clearInterval(batteryPollTimer);
+                    batteryPollTimer = null;
+                }
+            }
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) {
+                    stopBatteryPolling();
+                } else {
+                    startBatteryPolling();
+                }
+            });
+            if (!document.hidden) {
+                startBatteryPolling();
+            }
             {% endif %}
 
             // Initialize PIN display
