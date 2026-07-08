@@ -5,7 +5,7 @@ import tempfile
 from unittest.mock import patch
 from datetime import datetime, timezone
 
-from users_store import UsersStore, _now_iso
+from users_store import UsersStore, UsersStoreError, _now_iso
 
 
 @pytest.fixture
@@ -276,3 +276,102 @@ def test_json_schema_validation(users_store):
         assert "times_used" in user_data
         assert isinstance(user_data["times_used"], int)
         assert user_data["times_used"] >= 0
+
+
+def test_corrupt_file_raises_and_preserves_data(temp_users_file):
+    """A corrupt users.json must fail loud and NOT be overwritten with an empty store.
+
+    Regression test for the silent-data-loss bug: previously any load error fell
+    back to {"users": {}}, so the next mutation wiped the real file.
+    """
+    corrupt = '{"users": {"alice": {"pin": "1234"' + " broken"
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        f.write(corrupt)
+
+    store = UsersStore(temp_users_file)
+
+    # Every entry point that loads must raise instead of silently emptying.
+    with pytest.raises(UsersStoreError):
+        store.lookup_pin("1234")
+    with pytest.raises(UsersStoreError):
+        store.create_user("bob", "5678")
+
+    # The on-disk file must be byte-for-byte untouched.
+    with open(temp_users_file, "r", encoding="utf-8") as f:
+        assert f.read() == corrupt
+
+    # And it must be retryable once the file is fixed (not latched as loaded).
+    assert store._loaded is False
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        json.dump({"users": {"alice": {"pin": "1234", "active": True}}}, f)
+    assert store.lookup_pin("1234") == "alice"
+
+
+def test_wrong_shape_file_raises(temp_users_file):
+    """A structurally valid JSON with the wrong shape must also fail loud."""
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        json.dump({"users": ["not", "a", "dict"]}, f)
+
+    store = UsersStore(temp_users_file)
+    with pytest.raises(UsersStoreError):
+        store.lookup_pin("1234")
+
+
+def test_empty_file_treated_as_empty_store(temp_users_file):
+    """A zero-byte/whitespace file has nothing to lose and loads as an empty store."""
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        f.write("   \n")
+
+    store = UsersStore(temp_users_file)
+    assert store.lookup_pin("1234") is None
+    store.create_user("alice", "1234")
+    assert store.lookup_pin("1234") == "alice"
+
+
+def test_save_cross_device_path_writes_correctly(temp_users_file):
+    """When os.replace can't rename (cross-device), the copy path still writes
+    correct content and leaves no leftover .bak file behind."""
+    store = UsersStore(temp_users_file)
+    store.create_user("alice", "1234")
+
+    with patch("users_store.os.replace", side_effect=OSError("cross-device")):
+        store.update_user("alice", pin="5678")
+
+    with open(temp_users_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["users"]["alice"]["pin"] == "5678"
+    assert not os.path.exists(temp_users_file + ".bak")
+
+
+def test_save_recovers_from_cross_device_failure(temp_users_file):
+    """If the cross-device copy fails mid-write, the original file is restored
+    from the backup instead of being left truncated."""
+    store = UsersStore(temp_users_file)
+    store.create_user("alice", "1234")
+    original = open(temp_users_file, "r", encoding="utf-8").read()
+
+    real_open = open
+    calls = {"n": 0}
+
+    def failing_dest_open(path, mode="r", *args, **kwargs):
+        # Fail only the first write to the live users.json (the direct copy
+        # step in _save_atomic); everything else uses the real open.
+        if path == temp_users_file and "w" in mode:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("disk full")
+        return real_open(path, mode, *args, **kwargs)
+
+    def restore_copy2(src, dst):
+        with real_open(src, "rb") as s, real_open(dst, "wb") as d:
+            d.write(s.read())
+
+    with patch("users_store.os.replace", side_effect=OSError("cross-device")):
+        with patch("users_store.shutil.copy2", side_effect=restore_copy2):
+            with patch("builtins.open", side_effect=failing_dest_open):
+                with pytest.raises(OSError):
+                    store.update_user("alice", pin="5678")
+
+    # Original content must survive intact and no backup left behind.
+    assert open(temp_users_file, "r", encoding="utf-8").read() == original
+    assert not os.path.exists(temp_users_file + ".bak")

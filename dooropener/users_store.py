@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 
+class UsersStoreError(RuntimeError):
+    """Raised when the on-disk users store cannot be safely read or written."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -35,43 +39,104 @@ class UsersStore:
     def _load_file(self) -> None:
         if self._loaded:
             return
+        if not os.path.exists(self.path):
+            dir_name = os.path.dirname(self.path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+            self._set_loaded({"users": {}})
+            return
         try:
-            if os.path.exists(self.path):
-                with open(self.path, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
-                    if "users" not in self.data or not isinstance(
-                        self.data["users"], dict
-                    ):
-                        self.data = {"users": {}}
-            else:
-                os.makedirs(os.path.dirname(self.path), exist_ok=True)
-                self.data = {"users": {}}
-        except Exception:
-            self.data = {"users": {}}
-        finally:
-            self._loaded = True
-            self._pin_cache = None  # invalidate on load
+            with open(self.path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError as e:
+            raise UsersStoreError(f"Cannot read users store at {self.path}: {e}") from e
+        if content.strip() == "":
+            # A freshly-created/empty file (e.g. touch'd but never written) has
+            # no data to lose, so it's safe to treat like a missing file.
+            self._set_loaded({"users": {}})
+            return
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            # Do NOT fall back to {"users": {}} here. Every mutation loads then
+            # immediately re-saves self.data, so treating a corrupt file as "no
+            # users" would let the very next login or admin edit permanently
+            # overwrite the real data with an empty store. Fail loudly instead
+            # and leave the on-disk file untouched.
+            raise UsersStoreError(f"Cannot parse users store at {self.path}: {e}") from e
+        if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
+            raise UsersStoreError(f"Users store at {self.path} has an unexpected format")
+        self._set_loaded(data)
+
+    def _set_loaded(self, data: Dict[str, Any]) -> None:
+        """Commit *data* as the loaded state and invalidate the PIN cache.
+
+        Only reached on a successful load; a raised ``UsersStoreError`` leaves
+        ``_loaded`` False so a later call can retry once the file is fixed.
+        """
+        self.data = data
+        self._loaded = True
+        self._pin_cache = None  # invalidate on load
 
     def _save_atomic(self) -> None:
         dir_name = os.path.dirname(self.path)
-        os.makedirs(dir_name, exist_ok=True)
-        try:
-            fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-", dir=dir_name)
-        except PermissionError:
-            # Fallback: write temp file in system temp dir (e.g. read-only target)
-            fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-")
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        # Prefer writing the temp file next to the target (same filesystem =
+        # atomic rename). Fall back to the system temp dir when the app
+        # directory can't take a new file, e.g. a single-file Docker bind-mount,
+        # or the primary filesystem is out of space/inodes.
+        tmp = None
+        for tmp_dir in (dir_name or ".", tempfile.gettempdir()):
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".json", prefix=".users-", dir=tmp_dir)
+                break
+            except OSError:
+                continue
+        else:
+            raise UsersStoreError(
+                f"Cannot create temp file in {dir_name or '.'} or {tempfile.gettempdir()}"
+            )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             try:
+                # Same filesystem: atomic rename, no window where the file is
+                # missing or half-written.
                 os.replace(tmp, self.path)
             except OSError:
-                # Cross-device rename: copy content then remove temp
-                shutil.copy2(tmp, self.path)
+                # Cross-device: os.replace() can't rename across filesystems, so
+                # back up the existing file before overwriting it. If the copy
+                # below fails partway (disk fills up, process killed), restore
+                # from the backup instead of leaving users.json truncated.
+                backup_path = self.path + ".bak"
+                has_existing = os.path.exists(self.path)
+                if has_existing:
+                    shutil.copy2(self.path, backup_path)
+                try:
+                    with open(tmp, "r", encoding="utf-8") as src:
+                        content = src.read()
+                    with open(self.path, "w", encoding="utf-8") as dst:
+                        dst.write(content)
+                        dst.flush()
+                        os.fsync(dst.fileno())
+                except Exception:
+                    if has_existing:
+                        shutil.copy2(backup_path, self.path)
+                    raise
+                finally:
+                    if has_existing:
+                        try:
+                            os.remove(backup_path)
+                        except OSError:
+                            pass
                 os.remove(tmp)
         except BaseException:
             try:
-                os.remove(tmp)
+                if tmp and os.path.exists(tmp):
+                    os.remove(tmp)
             except OSError:
                 pass
             raise

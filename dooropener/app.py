@@ -39,7 +39,7 @@ from security import (
     validate_pin_input,
 )
 from config import get_current_time
-from users_store import UsersStore
+from users_store import UsersStore, UsersStoreError
 
 # ---------------------------------------------------------------------------
 # Version
@@ -354,6 +354,16 @@ def open_door():
             return jsonify({"status": "error",
                             "message": result["error"]}), result["status_code"]
 
+    except UsersStoreError as e:
+        # The user store is corrupt/unreadable. Fail loud and leave it untouched
+        # rather than authenticating against (or overwriting) empty data.
+        try:
+            _ip, _sid, _ = get_client_identifier()
+        except Exception:
+            _ip, _sid = request.remote_addr, "unknown"
+        _audit(_ip, _sid, "UNKNOWN", "USERS_STORE_ERROR", f"User store unavailable: {e}")
+        return jsonify({"status": "error",
+                        "message": "User store unavailable. Please contact the administrator."}), 503
     except Exception as e:
         try:
             _ip, _sid, _ = get_client_identifier()
@@ -621,6 +631,9 @@ def admin_users_list():
         for u in store_users:
             u["can_edit"] = True
         return jsonify({"users": store_users})
+    except UsersStoreError as e:
+        logger.error("User store unavailable while listing users: %s", e)
+        return jsonify({"error": "User store unavailable (corrupt or unreadable)"}), 503
     except Exception as e:
         logger.error("Error listing users: %s", e)
         return jsonify({"error": "Failed to list users"}), 500
@@ -650,6 +663,9 @@ def admin_users_create():
         if str(ve) == "PIN already in use":
             return jsonify({"error": "PIN already in use"}), 409
         return jsonify({"error": "Invalid input"}), 400
+    except UsersStoreError as e:
+        logger.error("User store unavailable while creating user: %s", e)
+        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
     except Exception as e:
         logger.error("Error creating user: %s", e)
         return jsonify({"error": "Failed to create user"}), 500
@@ -674,6 +690,9 @@ def admin_users_update(username: str):
         if str(ve) == "PIN already in use":
             return jsonify({"error": "PIN already in use"}), 409
         return jsonify({"error": "Invalid input"}), 400
+    except UsersStoreError as e:
+        logger.error("User store unavailable while updating user: %s", e)
+        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
     except Exception as e:
         logger.error("Error updating user: %s", e)
         return jsonify({"error": "Failed to update user"}), 500
@@ -692,6 +711,9 @@ def admin_users_delete(username: str):
         return jsonify({"status": "deleted"}), 200
     except KeyError:
         return jsonify({"error": "User not found"}), 404
+    except UsersStoreError as e:
+        logger.error("User store unavailable while deleting user: %s", e)
+        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
     except Exception as e:
         logger.error("Error deleting user: %s", e)
         return jsonify({"error": "Failed to delete user"}), 500
