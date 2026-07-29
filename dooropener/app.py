@@ -11,11 +11,11 @@ import hmac
 import json
 import logging
 import os
-import time
 from datetime import timedelta
 from functools import wraps
 from logging.handlers import RotatingFileHandler
 
+import atexit
 import secrets
 from flask import (
     Flask,
@@ -114,6 +114,9 @@ USERS_STORE_PATH = os.environ.get(
 )
 users_store = UsersStore(USERS_STORE_PATH)
 
+# Persist any coalesced usage counters on shutdown (touch_user batches writes).
+atexit.register(users_store.flush_touches)
+
 
 # ---------------------------------------------------------------------------
 # Audit helpers
@@ -168,6 +171,16 @@ def _check_csrf():
 def after_request(response):
     nonce = getattr(g, "csp_nonce", None)
     response = add_security_headers(response, csp_nonce=nonce)
+    # Static assets and the PWA shell may be cached; add_security_headers marks
+    # everything no-store by default, which needlessly defeats the service
+    # worker and re-fetches icons/CSS on every load.
+    if request.path in ("/service-worker.js", "/manifest.webmanifest") or request.path.startswith("/static/"):
+        # SW must always revalidate; other static assets can sit in cache.
+        if request.path == "/service-worker.js":
+            response.headers["Cache-Control"] = "no-cache"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers.pop("Pragma", None)
     # Gzip compression for text responses > 512 bytes
     if (
         response.status_code == 200
@@ -217,23 +230,13 @@ def manifest_file():
 
 
 # ---------------------------------------------------------------------------
-# Battery (rate-limited: max 1 request per 10s per client)
+# Battery
 # ---------------------------------------------------------------------------
-_battery_request_ts: dict[str, float] = {}
-
 @app.route("/battery")
 def battery():
-    if not config.battery_entity:
-        return jsonify({"level": None})
-    client_ip = request.remote_addr
-    now = time.monotonic()
-    last = _battery_request_ts.get(client_ip, 0.0)
-    if now - last < 10:
-        level = ha_client.get_battery_level()  # cheap — returns from cache
-        return jsonify({"level": level})
-    _battery_request_ts[client_ip] = now
-    level = ha_client.get_battery_level()
-    return jsonify({"level": level})
+    # get_battery_level() already caches for 60s and returns None when no
+    # battery entity is configured, so no extra per-IP gate is needed here.
+    return jsonify({"level": ha_client.get_battery_level()})
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +407,11 @@ def admin_auth():
     remember_me = data.get("remember_me", False) if data else False
     primary_ip, session_id, identifier = get_client_identifier()
     now = get_current_time()
+
+    # Bound memory: drop expired admin-IP blocks (and their failure counters).
+    for _ip in [k for k, v in _admin_ip_blocked_until.items() if now >= v]:
+        _admin_ip_blocked_until.pop(_ip, None)
+        _admin_ip_failed.pop(_ip, None)
 
     # Check IP-based block (catches multi-session brute force)
     if _admin_ip_blocked_until.get(primary_ip) and now < _admin_ip_blocked_until[primary_ip]:

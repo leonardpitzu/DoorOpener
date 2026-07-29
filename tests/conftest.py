@@ -72,12 +72,11 @@ def reset_state():
     app_module.users_store.data = {"users": {}}
     app_module.users_store._loaded = True
     app_module.users_store._pin_cache = None
-    app_module.users_store._pending_touches = {}
+    app_module.users_store._touch_dirty = False
+    app_module.users_store._last_touch_flush = 0.0
     # Reset battery cache
     app_module.ha_client._battery_cache = None
     app_module.ha_client._battery_cache_ts = -(app_module.ha_client._BATTERY_TTL + 1)
-    # Reset battery rate limiter
-    app_module._battery_request_ts.clear()
     # Bypass CSRF for all tests (dedicated CSRF tests re-enable it)
     _original_check_csrf = app_module._check_csrf
     app_module._check_csrf = lambda: None

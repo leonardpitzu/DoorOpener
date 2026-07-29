@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
@@ -27,14 +28,22 @@ class UsersStore:
     - Maintains a cached ``{pin: username}`` reverse map, invalidated on any CRUD operation.
     """
 
-    __slots__ = ("path", "data", "_loaded", "_pin_cache", "_pending_touches")
+    __slots__ = (
+        "path", "data", "_loaded", "_pin_cache",
+        "_touch_dirty", "_last_touch_flush",
+    )
+
+    # Coalesce rapid usage writes: apply in memory instantly, persist at most
+    # once per this interval (plus an atexit flush) instead of fsync-per-open.
+    _TOUCH_FLUSH_INTERVAL = 30.0  # seconds
 
     def __init__(self, path: str):
         self.path = path
         self.data: Dict[str, Any] = {"users": {}}
         self._loaded = False
         self._pin_cache: Dict[str, str] | None = None  # pin -> username
-        self._pending_touches: Dict[str, int] = {}  # username -> count
+        self._touch_dirty = False  # unpersisted touch(es) in self.data
+        self._last_touch_flush = 0.0  # monotonic ts of last touch flush
 
     def _load_file(self) -> None:
         if self._loaded:
@@ -269,23 +278,29 @@ class UsersStore:
         self._save_atomic()
 
     def touch_user(self, username: str) -> None:
-        """Record a usage event. Batches disk writes — call flush_touches() periodically."""
-        self._pending_touches[username] = self._pending_touches.get(username, 0) + 1
-        self._flush_touches()
+        """Record a usage event.
 
-    def _flush_touches(self) -> None:
-        """Write all pending touch events to disk in a single atomic write."""
-        if not self._pending_touches:
-            return
+        The counter/last-used timestamp are updated in memory immediately (so
+        reads are always current), but disk writes are coalesced: at most one
+        atomic write per ``_TOUCH_FLUSH_INTERVAL``. Call :meth:`flush_touches`
+        (e.g. from an ``atexit`` handler) to persist a trailing burst.
+        """
         self._ensure_loaded()
-        now = _now_iso()
-        for username, count in self._pending_touches.items():
-            if username in self.data["users"]:
-                self.data["users"][username]["last_used_at"] = now
-                self.data["users"][username]["times_used"] = (
-                    self.data["users"][username].get("times_used", 0) + count
-                )
-        self._pending_touches.clear()
+        meta = self.data["users"].get(username)
+        if meta is None:
+            return
+        meta["last_used_at"] = _now_iso()
+        meta["times_used"] = meta.get("times_used", 0) + 1
+        self._touch_dirty = True
+        if time.monotonic() - self._last_touch_flush >= self._TOUCH_FLUSH_INTERVAL:
+            self.flush_touches()
+
+    def flush_touches(self) -> None:
+        """Persist any pending in-memory touch events with a single atomic write."""
+        if not self._touch_dirty:
+            return
+        self._touch_dirty = False
+        self._last_touch_flush = time.monotonic()
         self._save_atomic()
 
     def user_exists(self, username: str) -> bool:
