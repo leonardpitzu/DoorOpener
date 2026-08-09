@@ -17,6 +17,9 @@ COPY dooropener/app.py dooropener/config.py dooropener/security.py \
 COPY dooropener/templates/ ./templates/
 COPY dooropener/static/ ./static/
 
+ARG BUILD_VERSION=0.0.0
+ENV APP_VERSION=${BUILD_VERSION}
+
 EXPOSE 6532
 
 CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${DOOROPENER_PORT:-6532} app:app --workers 1 --threads 2 --timeout 60"]

@@ -44,12 +44,11 @@ from users_store import UsersStore, UsersStoreError
 # ---------------------------------------------------------------------------
 # Version
 # ---------------------------------------------------------------------------
-_version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
-try:
-    with open(_version_file, encoding="utf-8") as _f:
-        APP_VERSION = _f.read().strip()
-except FileNotFoundError:
-    APP_VERSION = "0.0.0"
+# Stamped into the image from config.yaml, which the Supervisor passes to the
+# build as BUILD_VERSION. It used to be read from a VERSION file at the repo
+# root, which sits outside the add-on's Docker context and so never reached the
+# container: the portal reported 0.0.0 and its own update check short-circuited.
+APP_VERSION = os.environ.get("APP_VERSION", "0.0.0")
 
 # ---------------------------------------------------------------------------
 # Logging

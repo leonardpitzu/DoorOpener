@@ -26,5 +26,9 @@ COPY static/ ./static/
 COPY run.sh /
 RUN chmod +x /run.sh
 
+# Last, so bumping the version does not invalidate the dependency layers above.
+ARG BUILD_VERSION=0.0.0
+ENV APP_VERSION=${BUILD_VERSION}
+
 ENTRYPOINT []
 CMD ["/run.sh"]
