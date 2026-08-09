@@ -65,3 +65,27 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build Docker image
         run: docker build -f Dockerfile.dev -t dooropener:ci .
+
+  app:
+    name: App image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [tests]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      # Nothing is published: the Supervisor builds this on the Home Assistant
+      # host from config.yaml's version. Dockerfile.dev above is a different
+      # image, so without this the app's own Dockerfile has no CI coverage.
+      - name: Build app image
+        uses: docker/build-push-action@v7
+        with:
+          context: dooropener
+          push: false
+          load: true
+          tags: dooropener-app:ci
+          build-args: |
+            BUILD_VERSION=ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,5 +1,13 @@
-ARG BUILD_FROM
-FROM ${BUILD_FROM}
+# Per-arch base rather than the multi-platform ghcr.io/home-assistant/base
+# manifest, which has no armv7 — and config.yaml still lists armv7.
+ARG BUILD_ARCH=amd64
+FROM ghcr.io/home-assistant/${BUILD_ARCH}-base:3.21
+
+LABEL \
+    org.opencontainers.image.title="DoorOpener" \
+    org.opencontainers.image.description="Secure web interface for controlling smart door openers via Home Assistant" \
+    org.opencontainers.image.source="https://github.com/leonardpitzu/DoorOpener" \
+    org.opencontainers.image.licenses="MIT"
 
 # Install Python and pip
 RUN apk add --no-cache python3 py3-pip
