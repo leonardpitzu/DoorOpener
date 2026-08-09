@@ -320,3 +320,58 @@ def test_success_clears_persisted_block_cookie_when_expired(_client, app_module)
     assert r.status_code in (200, 502, 500)
     with _client.session_transaction() as s:
         assert "blocked_until_ts" not in s
+
+
+def test_invalid_pin_format_block_returns_429(_client, app_module):
+    """Repeated bad-format PINs count as failures and eventually return 429."""
+    import config
+    headers = _std_headers()
+    last = None
+    for _ in range(config.SESSION_MAX_ATTEMPTS):
+        last = _client.post(
+            "/open-door", data=json.dumps({"pin": "abc"}), headers=headers
+        )
+    assert last.status_code == 429
+    data = last.get_json()
+    assert "blocked_until" in data
+
+
+def test_admin_ip_block_across_sessions(_client, app_module, monkeypatch):
+    """Same IP, rotating sessions: session counter never trips but IP does."""
+    counter = {"n": 0}
+
+    def fake_identifier():
+        counter["n"] += 1
+        return "5.5.5.5", f"sess-{counter['n']}", f"id-{counter['n']}"
+
+    monkeypatch.setattr("app.get_client_identifier", fake_identifier)
+    wrong = json.dumps({"password": "nope", "remember_me": False})
+    h = _std_headers()
+    for _ in range(app_module.config.SESSION_MAX_ATTEMPTS):
+        r = _client.post("/admin/auth", data=wrong, headers=h)
+        assert r.status_code == 403
+    r = _client.post("/admin/auth", data=wrong, headers=h)
+    assert r.status_code == 429
+
+
+def test_admin_ip_helpers_unit(app_module):
+    """Direct unit coverage for the admin-IP rate-limit helpers."""
+    from config import BLOCK_TIME, SESSION_MAX_ATTEMPTS, get_current_time
+    rl = app_module.rate_limiter
+    ip = "7.7.7.7"
+    blocked = False
+    for _ in range(SESSION_MAX_ATTEMPTS):
+        blocked = rl.admin_record_failure(ip)
+    assert blocked is True
+    assert rl.admin_ip_remaining(ip) > 0
+    # Success clears everything.
+    rl.admin_record_success(ip)
+    assert rl.admin_ip_remaining(ip) == 0
+    assert ip not in rl.admin_ip_failed
+    # Expired block is cleaned up lazily on the next remaining() check.
+    rl.admin_ip_failed[ip] = 1
+    rl.admin_ip_blocked_until[ip] = get_current_time() - BLOCK_TIME
+    assert rl.admin_ip_remaining(ip) == 0
+    assert ip not in rl.admin_ip_blocked_until
+    assert ip not in rl.admin_ip_failed
+

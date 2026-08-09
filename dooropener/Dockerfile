@@ -6,10 +6,16 @@ RUN apk add --no-cache python3 py3-pip
 
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
+# Isolated venv instead of clobbering Alpine's system site-packages with
+# --break-system-packages; keeps the base image's Python untouched.
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv "${VIRTUAL_ENV}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# Install dependencies first (better layer caching). gunicorn is pinned in
+# requirements.txt, so no ad-hoc unpinned install here.
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages \
-    -r requirements.txt gunicorn
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py config.py security.py ha_client.py users_store.py ./

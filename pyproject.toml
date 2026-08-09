@@ -1,0 +1,25 @@
+# Single source of tool configuration. TOML only — no setup.cfg / *.ini.
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Pin the ruleset explicitly so `ruff check` is deterministic across ruff
+# versions (defaults have drifted between releases): E4/E7/E9 + Pyflakes.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["dooropener"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]

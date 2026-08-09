@@ -181,9 +181,13 @@ def after_request(response):
         else:
             response.headers["Cache-Control"] = "public, max-age=3600"
         response.headers.pop("Pragma", None)
-    # Gzip compression for text responses > 512 bytes
+    # Gzip compression for text responses > 512 bytes.
+    # Skip direct-passthrough (send_file) responses: their body is a lazy file
+    # wrapper, so get_data() raises and the static route 500s for any gzip
+    # client (i.e. every browser) — which silently killed the service worker.
     if (
         response.status_code == 200
+        and not response.direct_passthrough
         and "gzip" in request.headers.get("Accept-Encoding", "")
         and response.content_type
         and any(t in response.content_type for t in ("text/", "application/json", "javascript"))
@@ -286,7 +290,12 @@ def open_door():
             rate_limiter.record_failure(identifier, session_id)
             _audit(primary_ip, session_id, "UNKNOWN", "INVALID_FORMAT",
                    "Invalid PIN format")
-            return jsonify({"status": "error", "message": "Invalid PIN format"}), 400
+            resp: dict = {"status": "error", "message": "Invalid PIN format"}
+            ts = rate_limiter.blocked_until_ts(identifier, session_id)
+            if ts:
+                resp["blocked_until"] = ts
+                return jsonify(resp), 429
+            return jsonify(resp), 400
 
         # Match PIN (O(1) via cached reverse map)
         matched_user = users_store.lookup_pin(validated_pin)
@@ -311,7 +320,7 @@ def open_door():
                 msg = f"Invalid PIN. {remaining_attempts} attempts remaining"
 
             _audit(primary_ip, session_id, "UNKNOWN", "AUTH_FAILURE", msg)
-            resp: dict = {"status": "error", "message": msg}
+            resp = {"status": "error", "message": msg}
             ts = rate_limiter.blocked_until_ts(identifier, session_id)
             if ts:
                 resp["blocked_until"] = ts
@@ -392,11 +401,6 @@ def admin():
     )
 
 
-# IP-based admin auth rate limiting
-_admin_ip_failed: dict[str, int] = {}
-_admin_ip_blocked_until: dict[str, object] = {}
-
-
 @app.route("/admin/auth", methods=["POST"])
 def admin_auth():
     csrf_err = _check_csrf()
@@ -408,16 +412,11 @@ def admin_auth():
     primary_ip, session_id, identifier = get_client_identifier()
     now = get_current_time()
 
-    # Bound memory: drop expired admin-IP blocks (and their failure counters).
-    for _ip in [k for k, v in _admin_ip_blocked_until.items() if now >= v]:
-        _admin_ip_blocked_until.pop(_ip, None)
-        _admin_ip_failed.pop(_ip, None)
-
     # Check IP-based block (catches multi-session brute force)
-    if _admin_ip_blocked_until.get(primary_ip) and now < _admin_ip_blocked_until[primary_ip]:
-        remaining = (_admin_ip_blocked_until[primary_ip] - now).total_seconds()
+    admin_ip_remaining = rate_limiter.admin_ip_remaining(primary_ip)
+    if admin_ip_remaining > 0:
         _audit(primary_ip, session_id, "ADMIN", "ADMIN_IP_BLOCKED",
-               f"Admin auth IP blocked for {int(remaining)}s")
+               f"Admin auth IP blocked for {int(admin_ip_remaining)}s")
         return jsonify({"status": "error",
                         "message": "Too many failed attempts. Please try later."}), 429
 
@@ -434,8 +433,7 @@ def admin_auth():
     if hmac.compare_digest(password, config.admin_password):
         rate_limiter.session_failed.pop(session_id, None)
         rate_limiter.session_blocked_until.pop(session_id, None)
-        _admin_ip_failed.pop(primary_ip, None)
-        _admin_ip_blocked_until.pop(primary_ip, None)
+        rate_limiter.admin_record_success(primary_ip)
         session["admin_authenticated"] = True
         session["admin_login_time"] = now.isoformat()
         if remember_me:
@@ -447,13 +445,12 @@ def admin_auth():
 
     # Failure — track per-session AND per-IP
     rate_limiter.session_failed[session_id] = rate_limiter.session_failed.get(session_id, 0) + 1
-    _admin_ip_failed[primary_ip] = _admin_ip_failed.get(primary_ip, 0) + 1
+    ip_blocked = rate_limiter.admin_record_failure(primary_ip)
     if rate_limiter.session_failed[session_id] >= config.SESSION_MAX_ATTEMPTS:
         rate_limiter.session_blocked_until[session_id] = now + config.BLOCK_TIME
         details = (f"Invalid admin password. Session blocked for "
                     f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
-    elif _admin_ip_failed[primary_ip] >= config.SESSION_MAX_ATTEMPTS:
-        _admin_ip_blocked_until[primary_ip] = now + config.BLOCK_TIME
+    elif ip_blocked:
         details = (f"Invalid admin password. IP blocked for "
                     f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
     else:

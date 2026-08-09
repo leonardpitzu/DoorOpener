@@ -32,6 +32,7 @@ class RateLimiter:
     __slots__ = (
         "ip_failed", "ip_blocked_until", "session_failed",
         "session_blocked_until", "global_failed", "global_last_reset",
+        "admin_ip_failed", "admin_ip_blocked_until",
         "_last_prune",
     )
 
@@ -42,6 +43,8 @@ class RateLimiter:
         self.session_blocked_until: dict[str, object] = {}
         self.global_failed = 0
         self.global_last_reset = get_current_time()
+        self.admin_ip_failed: dict[str, int] = {}
+        self.admin_ip_blocked_until: dict[str, object] = {}
         self._last_prune = get_current_time()
 
     # --- Query methods ---
@@ -62,6 +65,9 @@ class RateLimiter:
         for key in [k for k, v in self.session_blocked_until.items() if v and now >= v]:
             del self.session_blocked_until[key]
             self.session_failed.pop(key, None)
+        for key in [k for k, v in self.admin_ip_blocked_until.items() if v and now >= v]:
+            del self.admin_ip_blocked_until[key]
+            self.admin_ip_failed.pop(key, None)
 
     def is_blocked(self, identifier: str, session_id: str) -> tuple[bool, float]:
         """Return (blocked, remaining_seconds) checking all layers."""
@@ -138,6 +144,33 @@ class RateLimiter:
         if session_id in self.session_blocked_until:
             del self.session_blocked_until[session_id]
         session.pop("blocked_until_ts", None)
+
+    # --- Admin auth (per-IP, catches multi-session brute force) ---
+
+    def admin_ip_remaining(self, ip: str) -> float:
+        """Seconds left on an active admin-IP block for *ip*, else 0."""
+        now = get_current_time()
+        until = self.admin_ip_blocked_until.get(ip)
+        if until and now < until:
+            return (until - now).total_seconds()
+        # Expired: clean up eagerly so the counter resets for the next attempt.
+        if until:
+            self.admin_ip_blocked_until.pop(ip, None)
+            self.admin_ip_failed.pop(ip, None)
+        return 0.0
+
+    def admin_record_failure(self, ip: str) -> bool:
+        """Count a failed admin login for *ip*. Returns True if it now blocks."""
+        self.admin_ip_failed[ip] = self.admin_ip_failed.get(ip, 0) + 1
+        if self.admin_ip_failed[ip] >= SESSION_MAX_ATTEMPTS:
+            self.admin_ip_blocked_until[ip] = get_current_time() + BLOCK_TIME
+            return True
+        return False
+
+    def admin_record_success(self, ip: str) -> None:
+        """Clear admin-IP counters/blocks on a successful admin login."""
+        self.admin_ip_failed.pop(ip, None)
+        self.admin_ip_blocked_until.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,10 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 class UsersStoreError(RuntimeError):
@@ -13,7 +14,7 @@ class UsersStoreError(RuntimeError):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class UsersStore:
@@ -30,7 +31,7 @@ class UsersStore:
 
     __slots__ = (
         "path", "data", "_loaded", "_pin_cache",
-        "_touch_dirty", "_last_touch_flush",
+        "_touch_dirty", "_last_touch_flush", "_lock",
     )
 
     # Coalesce rapid usage writes: apply in memory instantly, persist at most
@@ -39,11 +40,15 @@ class UsersStore:
 
     def __init__(self, path: str):
         self.path = path
-        self.data: Dict[str, Any] = {"users": {}}
+        self.data: dict[str, Any] = {"users": {}}
         self._loaded = False
-        self._pin_cache: Dict[str, str] | None = None  # pin -> username
+        self._pin_cache: dict[str, str] | None = None  # pin -> username
         self._touch_dirty = False  # unpersisted touch(es) in self.data
         self._last_touch_flush = 0.0  # monotonic ts of last touch flush
+        # Reentrant: gunicorn runs threaded (--threads 2) and mutators nest
+        # (touch_user -> flush_touches -> _save_atomic), so guard all in-memory
+        # dict mutations and the surrounding read-modify-write against races.
+        self._lock = threading.RLock()
 
     def _load_file(self) -> None:
         if self._loaded:
@@ -77,7 +82,7 @@ class UsersStore:
             raise UsersStoreError(f"Users store at {self.path} has an unexpected format")
         self._set_loaded(data)
 
-    def _set_loaded(self, data: Dict[str, Any]) -> None:
+    def _set_loaded(self, data: dict[str, Any]) -> None:
         """Commit *data* as the loaded state and invalidate the PIN cache.
 
         Only reached on a successful load; a raised ``UsersStoreError`` leaves
@@ -151,20 +156,21 @@ class UsersStore:
             raise
         self._pin_cache = None  # invalidate on write
 
-    def get_pin_map(self) -> Dict[str, str]:
+    def get_pin_map(self) -> dict[str, str]:
         """Return cached ``{pin: username}`` dict of active users."""
-        self._ensure_loaded()
-        if self._pin_cache is not None:
-            return self._pin_cache
-        result: Dict[str, str] = {}
-        for user, meta in self.data.get("users", {}).items():
-            if not bool(meta.get("active", True)):
-                continue
-            pin = meta.get("pin")
-            if isinstance(pin, str) and 4 <= len(pin) <= 8 and pin.isdigit():
-                result[pin] = user
-        self._pin_cache = result
-        return result
+        with self._lock:
+            self._ensure_loaded()
+            if self._pin_cache is not None:
+                return self._pin_cache
+            result: dict[str, str] = {}
+            for user, meta in self.data.get("users", {}).items():
+                if not bool(meta.get("active", True)):
+                    continue
+                pin = meta.get("pin")
+                if isinstance(pin, str) and 4 <= len(pin) <= 8 and pin.isdigit():
+                    result[pin] = user
+            self._pin_cache = result
+            return result
 
     def lookup_pin(self, pin: str) -> str | None:
         """Return username for *pin*, or ``None`` if no match."""
@@ -172,31 +178,33 @@ class UsersStore:
 
     def find_disabled_user_by_pin(self, pin: str) -> str | None:
         """Return username if *pin* belongs to a disabled account, else ``None``."""
-        self._ensure_loaded()
-        for user, meta in self.data.get("users", {}).items():
-            stored_pin = meta.get("pin", "")
-            if not (isinstance(stored_pin, str) and 4 <= len(stored_pin) <= 8 and stored_pin.isdigit()):
-                continue
-            if not bool(meta.get("active", True)) and hmac.compare_digest(stored_pin, pin):
-                return user
-        return None
+        with self._lock:
+            self._ensure_loaded()
+            for user, meta in self.data.get("users", {}).items():
+                stored_pin = meta.get("pin", "")
+                if not (isinstance(stored_pin, str) and 4 <= len(stored_pin) <= 8 and stored_pin.isdigit()):
+                    continue
+                if not bool(meta.get("active", True)) and hmac.compare_digest(stored_pin, pin):
+                    return user
+            return None
 
-    def list_users(self, include_pins: bool = False) -> Dict[str, Any]:
-        self._ensure_loaded()
-        items = []
-        for user, meta in self.data.get("users", {}).items():
-            item = {
-                "username": user,
-                "active": bool(meta.get("active", True)),
-                "created_at": meta.get("created_at"),
-                "updated_at": meta.get("updated_at"),
-                "last_used_at": meta.get("last_used_at"),
-                "times_used": meta.get("times_used", 0),
-            }
-            if include_pins:
-                item["pin"] = meta.get("pin")
-            items.append(item)
-        return {"users": items}
+    def list_users(self, include_pins: bool = False) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_loaded()
+            items = []
+            for user, meta in self.data.get("users", {}).items():
+                item = {
+                    "username": user,
+                    "active": bool(meta.get("active", True)),
+                    "created_at": meta.get("created_at"),
+                    "updated_at": meta.get("updated_at"),
+                    "last_used_at": meta.get("last_used_at"),
+                    "times_used": meta.get("times_used", 0),
+                }
+                if include_pins:
+                    item["pin"] = meta.get("pin")
+                items.append(item)
+            return {"users": items}
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -215,7 +223,7 @@ class UsersStore:
     def _validate_pin(pin: str) -> bool:
         return isinstance(pin, str) and pin.isdigit() and 4 <= len(pin) <= 8
 
-    def _pin_in_use(self, pin: str, exclude: Optional[str] = None) -> bool:
+    def _pin_in_use(self, pin: str, exclude: str | None = None) -> bool:
         """Return ``True`` if *pin* is already assigned to another user.
 
         Checks all users (active or not) to prevent collisions in the
@@ -230,52 +238,55 @@ class UsersStore:
         return False
 
     def create_user(self, username: str, pin: str, active: bool = True) -> None:
-        self._ensure_loaded()
-        if not self._validate_username(username):
-            raise ValueError("Invalid username")
-        if not self._validate_pin(pin):
-            raise ValueError("Invalid pin")
-        if username in self.data["users"]:
-            raise KeyError("User already exists")
-        if self._pin_in_use(pin):
-            raise ValueError("PIN already in use")
-        now = _now_iso()
-        self.data["users"][username] = {
-            "pin": pin,
-            "active": bool(active),
-            "created_at": now,
-            "updated_at": now,
-            "last_used_at": None,
-            "times_used": 0,
-        }
-        self._save_atomic()
+        with self._lock:
+            self._ensure_loaded()
+            if not self._validate_username(username):
+                raise ValueError("Invalid username")
+            if not self._validate_pin(pin):
+                raise ValueError("Invalid pin")
+            if username in self.data["users"]:
+                raise KeyError("User already exists")
+            if self._pin_in_use(pin):
+                raise ValueError("PIN already in use")
+            now = _now_iso()
+            self.data["users"][username] = {
+                "pin": pin,
+                "active": bool(active),
+                "created_at": now,
+                "updated_at": now,
+                "last_used_at": None,
+                "times_used": 0,
+            }
+            self._save_atomic()
 
     def update_user(
-        self, username: str, pin: Optional[str] = None, active: Optional[bool] = None
+        self, username: str, pin: str | None = None, active: bool | None = None
     ) -> None:
-        self._ensure_loaded()
-        if username not in self.data["users"]:
-            raise KeyError("User not found")
-        if pin is not None and not self._validate_pin(pin):
-            raise ValueError("Invalid pin")
-        if pin is not None and self._pin_in_use(pin, exclude=username):
-            raise ValueError("PIN already in use")
-        if active is not None:
-            active = bool(active)
-        meta = self.data["users"][username]
-        if pin is not None:
-            meta["pin"] = pin
-        if active is not None:
-            meta["active"] = active
-        meta["updated_at"] = _now_iso()
-        self._save_atomic()
+        with self._lock:
+            self._ensure_loaded()
+            if username not in self.data["users"]:
+                raise KeyError("User not found")
+            if pin is not None and not self._validate_pin(pin):
+                raise ValueError("Invalid pin")
+            if pin is not None and self._pin_in_use(pin, exclude=username):
+                raise ValueError("PIN already in use")
+            if active is not None:
+                active = bool(active)
+            meta = self.data["users"][username]
+            if pin is not None:
+                meta["pin"] = pin
+            if active is not None:
+                meta["active"] = active
+            meta["updated_at"] = _now_iso()
+            self._save_atomic()
 
     def delete_user(self, username: str) -> None:
-        self._ensure_loaded()
-        if username not in self.data["users"]:
-            raise KeyError("User not found")
-        del self.data["users"][username]
-        self._save_atomic()
+        with self._lock:
+            self._ensure_loaded()
+            if username not in self.data["users"]:
+                raise KeyError("User not found")
+            del self.data["users"][username]
+            self._save_atomic()
 
     def touch_user(self, username: str) -> None:
         """Record a usage event.
@@ -285,24 +296,27 @@ class UsersStore:
         atomic write per ``_TOUCH_FLUSH_INTERVAL``. Call :meth:`flush_touches`
         (e.g. from an ``atexit`` handler) to persist a trailing burst.
         """
-        self._ensure_loaded()
-        meta = self.data["users"].get(username)
-        if meta is None:
-            return
-        meta["last_used_at"] = _now_iso()
-        meta["times_used"] = meta.get("times_used", 0) + 1
-        self._touch_dirty = True
-        if time.monotonic() - self._last_touch_flush >= self._TOUCH_FLUSH_INTERVAL:
-            self.flush_touches()
+        with self._lock:
+            self._ensure_loaded()
+            meta = self.data["users"].get(username)
+            if meta is None:
+                return
+            meta["last_used_at"] = _now_iso()
+            meta["times_used"] = meta.get("times_used", 0) + 1
+            self._touch_dirty = True
+            if time.monotonic() - self._last_touch_flush >= self._TOUCH_FLUSH_INTERVAL:
+                self.flush_touches()
 
     def flush_touches(self) -> None:
         """Persist any pending in-memory touch events with a single atomic write."""
-        if not self._touch_dirty:
-            return
-        self._touch_dirty = False
-        self._last_touch_flush = time.monotonic()
-        self._save_atomic()
+        with self._lock:
+            if not self._touch_dirty:
+                return
+            self._touch_dirty = False
+            self._last_touch_flush = time.monotonic()
+            self._save_atomic()
 
     def user_exists(self, username: str) -> bool:
-        self._ensure_loaded()
-        return username in self.data["users"]
+        with self._lock:
+            self._ensure_loaded()
+            return username in self.data["users"]

@@ -66,6 +66,8 @@ def reset_state():
     app_module.rate_limiter.ip_blocked_until.clear()
     app_module.rate_limiter.session_failed.clear()
     app_module.rate_limiter.session_blocked_until.clear()
+    app_module.rate_limiter.admin_ip_failed.clear()
+    app_module.rate_limiter.admin_ip_blocked_until.clear()
     app_module.rate_limiter.global_failed = 0
     app_module.rate_limiter.global_last_reset = app_module.get_current_time()
     # Reset users_store to empty (tests add users as needed)

@@ -9,6 +9,19 @@ def test_service_worker_endpoint(client):
         assert "javascript" in (r.mimetype or "")
 
 
+def test_service_worker_with_gzip_does_not_500(client):
+    """Regression: gzip must skip passthrough (send_file) responses.
+
+    A gzip-capable client (every browser) previously 500'd the SW because
+    after_request called get_data() on a direct-passthrough response.
+    """
+    r = client.get("/service-worker.js", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code in (200, 404)
+    if r.status_code == 200:
+        assert r.headers.get("Content-Encoding") != "gzip"
+
+
+
 def test_manifest_endpoint(client):
     r = client.get("/manifest.webmanifest")
     assert r.status_code in (200, 404)
