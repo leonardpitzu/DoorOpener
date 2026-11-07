@@ -1,5 +1,7 @@
 /* DoorOpener Service Worker */
-const CACHE_NAME = 'dooropener-cache-v2';
+// Bump the version to purge old caches. v3 also evicts admin and API responses
+// that earlier versions cached by mistake.
+const CACHE_NAME = 'dooropener-cache-v3';
 const ASSETS = [
   '/',
   '/static/background.jpg',
@@ -22,45 +24,29 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function cacheCopy(req, res) {
+  const copy = res.clone();
+  caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+  return res;
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
 
-  // Only handle same-origin GET requests
-  if (req.method !== 'GET' || url.origin !== self.location.origin) {
-    return; // let the browser handle it normally
-  }
-
-  // For the app shell (root), prefer network but fallback to cache
+  // The keypad page: network first, so it is always current, with an offline fallback.
   if (url.pathname === '/') {
-    event.respondWith(
-      fetch(req).then((res) => {
-        const resClone = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
-        return res;
-      }).catch(() => caches.match(req))
-    );
+    event.respondWith(fetch(req).then((res) => cacheCopy(req, res)).catch(() => caches.match(req)));
     return;
   }
 
-  // For static assets, use cache-first
+  // Static assets: cache first.
   if (url.pathname.startsWith('/static/')) {
-    event.respondWith(
-      caches.match(req).then((cached) => cached || fetch(req).then((res) => {
-        const resClone = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
-        return res;
-      }))
-    );
-    return;
+    event.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => cacheCopy(req, res))));
   }
 
-  // Default: network-first with cache fallback
-  event.respondWith(
-    fetch(req).then((res) => {
-      const resClone = res.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
-      return res;
-    }).catch(() => caches.match(req))
-  );
+  // Everything else (/admin/*, /battery, /health, ...) goes straight to the network
+  // and is never cached: user lists, audit logs and login state must not linger in
+  // Cache Storage or be replayed offline after logout.
 });

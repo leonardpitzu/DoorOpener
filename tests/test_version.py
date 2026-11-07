@@ -2,8 +2,8 @@
 
 A VERSION file at the repo root used to feed this, but it sat outside the
 add-on's Docker build context and was never copied in, so the container always
-fell back to 0.0.0 — which in turn disabled the portal's own update check.
-config.yaml is now the single source and reaches the app as APP_VERSION.
+reported 0.0.0. config.yaml is now the single source and reaches the app as
+APP_VERSION, shown on the admin dashboard and by /health.
 """
 import importlib
 

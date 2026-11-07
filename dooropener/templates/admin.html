@@ -158,6 +158,44 @@
             background: linear-gradient(135deg, #45a049, #3e8e41);
             transform: translateY(-1px);
         }
+        .refresh-btn:disabled {
+            opacity: 0.6;
+            cursor: progress;
+            transform: none;
+        }
+        .version-tag {
+            font-size: 0.45em;
+            font-weight: 600;
+            color: rgba(0,0,0,0.45);
+            vertical-align: middle;
+            margin-left: 0.4em;
+        }
+        /* Modal form fields */
+        .modal-body input,
+        .modal-body select {
+            box-sizing: border-box;  /* width: 100% includes the padding */
+        }
+        .field-label {
+            display: block;
+            margin: 10px 0 4px 2px;
+        }
+        .pin-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+        .pin-row input {
+            flex: 1 1 140px;
+            min-width: 0;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.08em;
+        }
+        .generate-btn,
+        .generate-btn:hover {
+            background: linear-gradient(135deg, #5e35b1, #4527a0);
+            white-space: nowrap;
+        }
         /* Toasts */
         #toast-container {
             position: fixed;
@@ -321,7 +359,7 @@
         {% if is_authenticated %}
         <div id="dashboard" style="display: block;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-                <h1>🔐 Admin Dashboard</h1>
+                <h1>🔐 Admin Dashboard <span class="version-tag">v{{ app_version }}</span></h1>
                 <button id="logoutBtn" style="padding: 8px 16px; background: linear-gradient(135deg, #f44336, #d32f2f); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">Logout</button>
             </div>
             
@@ -458,7 +496,7 @@
                     // Reload the page so the server renders the full dashboard HTML
                     window.location.reload();
                 } else {
-                    errorDiv.textContent = 'Invalid admin password';
+                    errorDiv.textContent = data.message || 'Invalid admin password';
                     errorDiv.style.display = 'block';
                 }
             } catch (error) {
@@ -611,21 +649,66 @@
             return card;
         }
 
+        // A PIN input with a generator next to it: pick a length, and the server
+        // fills in a PIN that no user has and nobody would guess first.
+        function pinField(id, label, placeholder) {
+            const lengths = [4, 5, 6, 7, 8]
+                .map(n => `<option value="${n}"${n === 6 ? ' selected' : ''}>${n} digits</option>`)
+                .join('');
+            return `
+                <label class="field-label" for="${id}">${label}</label>
+                <div class="pin-row">
+                    <input id="${id}" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="${placeholder}">
+                    <select id="${id}_len" aria-label="PIN length">${lengths}</select>
+                    <button type="button" id="${id}_gen" class="refresh-btn generate-btn">🎲 Generate</button>
+                </div>
+            `;
+        }
+
+        function bindPinGenerator(card, id) {
+            const input = card.querySelector('#' + id);
+            const length = card.querySelector('#' + id + '_len');
+            const generate = card.querySelector('#' + id + '_gen');
+            const save = card.querySelector('#modalOk');
+            generate.addEventListener('click', async () => {
+                // Saving waits for the PIN, so it can never send a half-filled field.
+                generate.disabled = save.disabled = true;
+                try {
+                    const res = await fetch('/admin/generate-pin?length=' + encodeURIComponent(length.value), {
+                        credentials: 'same-origin',
+                        cache: 'no-store',
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                        showToast('Could not generate a PIN: ' + (data.message || res.status), 'error');
+                        return;
+                    }
+                    input.value = data.pin;
+                    input.type = 'text';  // the admin has to read it to pass it on
+                    input.focus();
+                } catch (e) {
+                    showToast('Could not generate a PIN', 'error');
+                } finally {
+                    generate.disabled = save.disabled = false;
+                }
+            });
+        }
+
         function openAddUser() {
             const fields = `
-                <label style="display:block; margin:6px 0 4px 2px; font-weight:600; color:rgba(0,0,0,0.8)">Username</label>
-                <input id="um_username" placeholder="letters, numbers, _-." style="width:100%">
-                <label style="display:block; margin:10px 0 4px 2px; font-weight:600; color:rgba(0,0,0,0.8)">PIN (4-8 digits)</label>
-                <input id="um_pin" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 1234" style="width:100%">
+                <label class="field-label" for="um_username">Username</label>
+                <input id="um_username" placeholder="letters, numbers, _-." autocomplete="off" style="width:100%">
+                ${pinField('um_pin', 'PIN (4-8 digits)', 'type one, or generate')}
             `;
-            showModal('Add User', fields, async (card) => {
+            const card = showModal('Add User', fields, async (card) => {
                 const username = card.querySelector('#um_username').value.trim();
                 const pin = card.querySelector('#um_pin').value.trim();
-                if (!username) { alert('Username required'); throw new Error('v'); }
-                if (!/^[-_.A-Za-z0-9]{1,32}$/.test(username)) { alert('Invalid username'); throw new Error('v'); }
-                if (!/^\d{4,8}$/.test(pin)) { alert('PIN must be 4-8 digits'); throw new Error('v'); }
+                if (!username) { showToast('Username required', 'error'); throw new Error('v'); }
+                if (!/^[-_.A-Za-z0-9]{1,32}$/.test(username)) { showToast('Invalid username', 'error'); throw new Error('v'); }
+                if (!/^\d{4,8}$/.test(pin)) { showToast('PIN must be 4-8 digits', 'error'); throw new Error('v'); }
                 await addUser(username, pin);
             });
+            bindPinGenerator(card, 'um_pin');
         }
 
         async function addUser(username, pin) {
@@ -639,7 +722,7 @@
                 });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
-                    showToast('Create failed: ' + (err.error || res.status), 'error');
+                    showToast('Create failed: ' + (err.message || res.status), 'error');
                     return;
                 }
                 showToast('User created', 'success');
@@ -651,15 +734,15 @@
 
         function openEditUser(username) {
             const fields = `
-                <div style="color: rgba(0,0,0,0.7); margin-bottom:6px">Update PIN for <b>${username}</b></div>
-                <label style="display:block; margin:6px 0 4px 2px; font-weight:600; color:rgba(0,0,0,0.8)">New PIN (optional)</label>
-                <input id="um_newpin" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="leave blank to keep current" style="width:100%">
+                <div style="color: rgba(0,0,0,0.7); margin-bottom:6px">Update PIN for <b>${escapeHtml(username)}</b></div>
+                ${pinField('um_newpin', 'New PIN (optional)', 'leave blank to keep current')}
             `;
-            showModal('Edit User', fields, async (card) => {
+            const card = showModal('Edit User', fields, async (card) => {
                 const pin = card.querySelector('#um_newpin').value.trim();
                 if (pin && !/^\d{4,8}$/.test(pin)) { showToast('PIN must be 4-8 digits', 'error'); throw new Error('v'); }
                 await editUser(username, pin || undefined);
             });
+            bindPinGenerator(card, 'um_newpin');
         }
 
         async function editUser(username, pin) {
@@ -675,7 +758,7 @@
                 });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
-                    showToast('Update failed: ' + (err.error || res.status), 'error');
+                    showToast('Update failed: ' + (err.message || res.status), 'error');
                     return;
                 }
                 showToast('User updated', 'success');
@@ -696,7 +779,7 @@
                 });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
-                    showToast('Toggle failed: ' + (err.error || res.status), 'error');
+                    showToast('Toggle failed: ' + (err.message || res.status), 'error');
                     return;
                 }
                 showToast('User ' + (active ? 'activated' : 'deactivated'), 'success');
@@ -717,7 +800,7 @@
                 });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
-                    showToast('Delete failed: ' + (err.error || res.status), 'error');
+                    showToast('Delete failed: ' + (err.message || res.status), 'error');
                     return;
                 }
                 showToast('User deleted', 'success');
@@ -751,7 +834,7 @@
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
-                    showToast('Clear logs failed: ' + (data.error || res.status), 'error');
+                    showToast('Clear logs failed: ' + (data.message || res.status), 'error');
                     if (typeof restore === 'function') restore();
                     return;
                 }
@@ -889,40 +972,6 @@
             const dash = document.getElementById('dashboard');
             dash.classList.toggle('compact', enabled);
         }
-
-        // --- Version check ---
-        function _compareVersions(a, b) {
-            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
-            for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-                const na = pa[i] || 0, nb = pb[i] || 0;
-                if (na > nb) return 1;
-                if (na < nb) return -1;
-            }
-            return 0;
-        }
-
-        function checkForUpdate() {
-            const currentVersion = '{{ app_version }}';
-            if (!currentVersion || currentVersion === '0.0.0') return;
-            fetch('https://api.github.com/repos/Sloth-on-meth/DoorOpener/releases/latest', { cache: 'no-store' })
-                .then(r => r.json())
-                .then(data => {
-                    const latest = (data.tag_name || '').replace(/^v/, '');
-                    if (latest && _compareVersions(latest, currentVersion) > 0) {
-                        showToast('Update available: v' + latest + ' (current: v' + currentVersion + ')', 'info', true);
-                    }
-                })
-                .catch(() => { /* silently ignore */ });
-        }
-
-        // Load logs on page load (only if dashboard exists and is visible)
-        document.addEventListener('DOMContentLoaded', function() {
-            const dash = document.getElementById('dashboard');
-            if (dash && dash.style.display !== 'none') {
-                loadLogs();
-                checkForUpdate();
-            }
-        });
 
         // Tabs logic
         function switchTab(tab) {

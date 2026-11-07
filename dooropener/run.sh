@@ -1,38 +1,22 @@
 #!/usr/bin/env bash
 # Home Assistant add-on entry point for DoorOpener.
-# HA Supervisor writes user config to /data/options.json automatically.
+# The Supervisor writes the add-on configuration to /data/options.json; config.py
+# reads it, and falls back to the Supervisor's own API token when ha_token is empty.
+set -euo pipefail
 
 export DOOROPENER_OPTIONS_PATH="/data/options.json"
 export DOOROPENER_LOG_DIR="/data/logs"
 export USERS_STORE_PATH="/data/users.json"
 
-mkdir -p "${DOOROPENER_LOG_DIR}"
-
-# Read port from options.json (default 6532)
 DOOROPENER_PORT="$(python3 -c "import json; print(json.load(open('/data/options.json')).get('port', 6532))")"
 export DOOROPENER_PORT
 
-# If the user left ha_token empty, inject the Supervisor API token
-HA_TOKEN="$(python3 -c "import json; print(json.load(open('/data/options.json')).get('ha_token', ''))")"
-if [ -z "${HA_TOKEN}" ] && [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-  echo "[dooropener] No ha_token configured — using Supervisor API token"
-  python3 -c "
-import json, os
-with open('/data/options.json') as f:
-    opts = json.load(f)
-opts['ha_token'] = os.environ.get('SUPERVISOR_TOKEN', '')
-if not opts.get('ha_url') or opts['ha_url'] == 'http://supervisor/core':
-    opts['ha_url'] = 'http://supervisor/core/api'
-with open('/data/options.json', 'w') as f:
-    json.dump(opts, f)
-"
-fi
-
 echo "[dooropener] Starting DoorOpener on port ${DOOROPENER_PORT}..."
 cd /app
+# One worker: the brute-force counters live in memory and must see every request.
 exec gunicorn \
   --bind "0.0.0.0:${DOOROPENER_PORT}" \
-  app:app \
   --workers 1 \
   --threads 2 \
-  --timeout 60
+  --timeout 60 \
+  app:app

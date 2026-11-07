@@ -92,7 +92,7 @@ def test_admin_users_create_duplicate(mock_users_store):
         "/admin/users", json={"username": "existing", "pin": "5678", "active": True}
     )
     assert response.status_code == 409
-    assert "already exists" in response.get_json()["error"]
+    assert "already exists" in response.get_json()["message"]
 
 
 def test_admin_users_create_invalid_data(mock_users_store):
@@ -122,7 +122,7 @@ def test_admin_users_update_nonexistent(mock_users_store):
     _admin_session(c)
     response = c.put("/admin/users/nonexistent", json={"pin": "1234", "active": True})
     assert response.status_code == 404
-    assert "not found" in response.get_json()["error"]
+    assert "not found" in response.get_json()["message"]
 
 
 def test_admin_users_delete(mock_users_store):
@@ -140,7 +140,7 @@ def test_admin_users_delete_nonexistent(mock_users_store):
     _admin_session(c)
     response = c.delete("/admin/users/nonexistent")
     assert response.status_code == 404
-    assert "not found" in response.get_json()["error"]
+    assert "not found" in response.get_json()["message"]
 
 
 def test_admin_users_unauthenticated_access(mock_users_store):
@@ -161,7 +161,7 @@ def test_admin_users_unauthenticated_access(mock_users_store):
         elif method == "DELETE":
             response = c.delete(endpoint)
         assert response.status_code == 401
-        assert "Authentication required" in response.get_json()["error"]
+        assert "Authentication required" in response.get_json()["message"]
 
 
 def test_times_used_counter_integration(mock_users_store, monkeypatch):

@@ -32,18 +32,21 @@ def test_battery_out_of_range_and_none_paths():
 
 
 def test_admin_logs_old_format_parsing():
-    old_line = "2025-09-01T12:00:00Z - 1.2.3.4 - alice - SUCCESS - Door opened\n"
-    from io import BytesIO
+    import app as app_module
 
-    file_obj = BytesIO(old_line.encode("utf-8"))
-    with patch("os.path.exists", return_value=True), \
-         patch("os.path.getsize", return_value=len(old_line.encode("utf-8"))), \
-         patch("builtins.open", return_value=file_obj):
-        c = client_app()
-        with c.session_transaction() as s:
-            s["admin_authenticated"] = True
-            s["admin_login_time"] = datetime.now(timezone.utc).isoformat()
-        r = c.get("/admin/logs")
-        assert r.status_code == 200
-        data = r.get_json()
-        assert any(row.get("user") == "alice" for row in data.get("logs", []))
+    app_module.audit_log.clear()
+    with open(app_module.audit_log.path, "a", encoding="utf-8") as f:
+        f.write("2025-09-01T12:00:00Z - 1.2.3.4 - alice - SUCCESS - Door opened\n")
+    c = client_app()
+    with c.session_transaction() as s:
+        s["admin_authenticated"] = True
+        s["admin_login_time"] = datetime.now(timezone.utc).isoformat()
+    r = c.get("/admin/logs")
+    assert r.status_code == 200
+    assert r.get_json()["logs"] == [{
+        "timestamp": "2025-09-01T12:00:00Z",
+        "ip": "1.2.3.4",
+        "user": "alice",
+        "status": "SUCCESS",
+        "details": "Door opened",
+    }]

@@ -1,29 +1,18 @@
 """CSRF protection tests.
 
-These tests re-enable the real _check_csrf() that the autouse fixture
-disables, ensuring token validation actually works.
+These tests switch CSRF checking back on (the autouse fixture turns it off),
+ensuring token validation actually works.
 """
 import pytest
 from datetime import datetime, timezone
 
 
 @pytest.fixture
-def csrf_client():
+def csrf_client(monkeypatch):
     """Client with real CSRF checking enabled."""
-    import hmac as _hmac
     import app as app_module
-    from flask import request, session, jsonify
 
-    # Restore the real _check_csrf (autouse fixture replaces it with a no-op)
-    def real_check():
-        token = request.headers.get("X-CSRF-Token") or (
-            request.get_json(silent=True) or {}
-        ).get("_csrf_token")
-        if not token or not _hmac.compare_digest(token, session.get("_csrf_token", "")):
-            return jsonify({"status": "error", "message": "Invalid or missing CSRF token"}), 403
-        return None
-
-    app_module._check_csrf = real_check
+    monkeypatch.setitem(app_module.app.config, "CSRF_ENABLED", True)
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
         with app_module.app.app_context():

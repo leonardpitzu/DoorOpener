@@ -58,18 +58,14 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
-    """Reset rate-limiter state and users_store between tests."""
+def reset_state(monkeypatch):
+    """Fresh rate limits, an empty users store and no CSRF check for every test."""
     import app as app_module
+    from security import RateLimiter
 
-    app_module.rate_limiter.ip_failed.clear()
-    app_module.rate_limiter.ip_blocked_until.clear()
-    app_module.rate_limiter.session_failed.clear()
-    app_module.rate_limiter.session_blocked_until.clear()
-    app_module.rate_limiter.admin_ip_failed.clear()
-    app_module.rate_limiter.admin_ip_blocked_until.clear()
-    app_module.rate_limiter.global_failed = 0
-    app_module.rate_limiter.global_last_reset = app_module.get_current_time()
+    monkeypatch.setattr(app_module, "rate_limiter", RateLimiter())
+    # Dedicated CSRF tests switch it back on.
+    monkeypatch.setitem(app_module.app.config, "CSRF_ENABLED", False)
     # Reset users_store to empty (tests add users as needed)
     app_module.users_store.data = {"users": {}}
     app_module.users_store._loaded = True
@@ -79,8 +75,3 @@ def reset_state():
     # Reset battery cache
     app_module.ha_client._battery_cache = None
     app_module.ha_client._battery_cache_ts = -(app_module.ha_client._BATTERY_TTL + 1)
-    # Bypass CSRF for all tests (dedicated CSRF tests re-enable it)
-    _original_check_csrf = app_module._check_csrf
-    app_module._check_csrf = lambda: None
-    yield
-    app_module._check_csrf = _original_check_csrf

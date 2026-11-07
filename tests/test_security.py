@@ -1,7 +1,6 @@
 """Security and rate-limiting tests."""
 import json
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -42,33 +41,19 @@ def test_security_headers_on_index(_client):
     assert "X-XSS-Protection" not in resp.headers
 
 
-def test_suspicious_request_blocked_open_door(_client):
-    resp = _client.post(
-        "/open-door",
-        data=json.dumps({"pin": "1234"}),
-        headers={"Content-Type": "application/json", "User-Agent": "curl"},
-    )
-    assert resp.status_code == 403
+def _block(throttle, key):
+    for _ in range(throttle.limit):
+        throttle.fail(key)
 
 
-def test_global_rate_limit_blocks(_client, app_module):
-    import config
-    app_module.rate_limiter.global_failed = config.MAX_GLOBAL_ATTEMPTS_PER_HOUR
-    resp = _client.post(
-        "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
-    )
-    assert resp.status_code == 429
+def _session_id(client):
+    client.post("/open-door", data=json.dumps({}), headers=_std_headers())
+    with client.session_transaction() as s:
+        return s["_session_id"]
 
 
 def test_open_door_session_blocked_flow(_client, app_module):
-    from config import get_current_time
-    _client.post("/open-door", data=json.dumps({}), headers=_std_headers())
-    with _client.session_transaction() as s:
-        sid = s.get("_session_id")
-    assert sid
-    app_module.rate_limiter.global_failed = 0
-    app_module.rate_limiter.global_last_reset = get_current_time()
-    app_module.rate_limiter.session_blocked_until[sid] = get_current_time() + timedelta(seconds=60)
+    _block(app_module.rate_limiter.pin_session, _session_id(_client))
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
     )
@@ -78,11 +63,8 @@ def test_open_door_session_blocked_flow(_client, app_module):
 
 
 def test_open_door_ip_blocked_flow(_client, app_module, monkeypatch):
-    from config import get_current_time
-    monkeypatch.setattr(
-        "app.get_client_identifier", lambda: ("9.9.9.9", "sessX", "idkeyX")
-    )
-    app_module.rate_limiter.ip_blocked_until["idkeyX"] = get_current_time() + timedelta(seconds=60)
+    monkeypatch.setattr("app.client_identity", lambda: ("9.9.9.9", "sessX"))
+    _block(app_module.rate_limiter.pin_ip, "9.9.9.9")
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
     )
@@ -116,11 +98,6 @@ def test_admin_auth_success(_client, app_module, monkeypatch):
 
 
 def test_testmode_pin_success(_client, app_module):
-    from config import get_current_time
-    app_module.rate_limiter.global_failed = 0
-    app_module.rate_limiter.global_last_reset = get_current_time()
-    app_module.rate_limiter.ip_blocked_until.clear()
-    app_module.rate_limiter.session_blocked_until.clear()
     app_module.users_store.create_user("alice", "1234")
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
@@ -234,39 +211,22 @@ def test_battery_invalid_format(_client, app_module):
         assert response.get_json()["level"] is None
 
 
-def test_admin_logs_parsing(_client, app_module, tmp_path):
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / "log.txt"
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ip": "1.2.3.4",
-        "user": "alice",
-        "status": "SUCCESS",
-        "details": "Door opened",
-    }
-    log_file.write_text(json.dumps(entry) + "\n", encoding="utf-8")
-    with patch("app.os.path.exists", return_value=True), patch(
-        "app.os.path.join", return_value=str(log_file)
-    ):
-        with _client.session_transaction() as s:
-            s["admin_authenticated"] = True
-            s["admin_login_time"] = datetime.now(timezone.utc).isoformat()
-        r = _client.get("/admin/logs")
-        assert r.status_code == 200
-        data = r.get_json()
-        assert "logs" in data and isinstance(data["logs"], list)
-        assert any(row.get("user") == "alice" for row in data["logs"])
+def test_admin_logs_parsing(_client, app_module):
+    app_module.audit_log.clear()
+    app_module.audit_log.record("1.2.3.4", "sess", "alice", "SUCCESS", "Door opened")
+    with _client.session_transaction() as s:
+        s["admin_authenticated"] = True
+        s["admin_login_time"] = datetime.now(timezone.utc).isoformat()
+    r = _client.get("/admin/logs")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert "logs" in data and isinstance(data["logs"], list)
+    assert any(row.get("user") == "alice" for row in data["logs"])
 
 
 def test_blocked_denies_correct_pin_and_returns_blocked_until(_client, app_module):
-    from config import get_current_time
     app_module.users_store.create_user("alice", "1234")
-    _client.post("/open-door", data=json.dumps({}), headers=_std_headers())
-    with _client.session_transaction() as s:
-        sid = s.get("_session_id")
-    assert sid
-    app_module.rate_limiter.session_blocked_until[sid] = get_current_time() + timedelta(seconds=60)
+    _block(app_module.rate_limiter.pin_session, _session_id(_client))
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
     )
@@ -295,56 +255,30 @@ def test_open_door_block_set_on_failure_includes_blocked_until(_client, app_modu
     assert "blocked_until" in data2
 
 
-def test_persisted_block_cookie_blocks_correct_pin(_client, app_module):
-    app_module.users_store.create_user("zoe", "4321")
-    with _client.session_transaction() as s:
-        s["_session_id"] = "sessCookie"
-        s["blocked_until_ts"] = time.time() + 60
-    r = _client.post(
-        "/open-door", data=json.dumps({"pin": "4321"}), headers=_std_headers()
-    )
-    assert r.status_code == 429
-    data = r.get_json()
-    assert data.get("status") == "error"
-    assert "blocked_until" in data
-
-
-def test_success_clears_persisted_block_cookie_when_expired(_client, app_module):
-    app_module.users_store.create_user("amy", "1234")
-    with _client.session_transaction() as s:
-        s["_session_id"] = "sessExpired"
-        s["blocked_until_ts"] = time.time() - 1  # already expired
-    r = _client.post(
-        "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
-    )
-    assert r.status_code in (200, 502, 500)
-    with _client.session_transaction() as s:
-        assert "blocked_until_ts" not in s
-
-
-def test_invalid_pin_format_block_returns_429(_client, app_module):
-    """Repeated bad-format PINs count as failures and eventually return 429."""
+def test_invalid_pin_format_counts_toward_a_block(_client, app_module):
+    """Bad-format PINs are failures: the one that trips the block says so, the next gets 429."""
     import config
     headers = _std_headers()
-    last = None
-    for _ in range(config.SESSION_MAX_ATTEMPTS):
-        last = _client.post(
-            "/open-door", data=json.dumps({"pin": "abc"}), headers=headers
-        )
-    assert last.status_code == 429
-    data = last.get_json()
-    assert "blocked_until" in data
+    for _ in range(config.SESSION_MAX_ATTEMPTS - 1):
+        r = _client.post("/open-door", data=json.dumps({"pin": "abc"}), headers=headers)
+        assert r.status_code == 400
+        assert "blocked_until" not in r.get_json()
+    r = _client.post("/open-door", data=json.dumps({"pin": "abc"}), headers=headers)
+    assert r.status_code == 400
+    assert "blocked_until" in r.get_json()
+    r = _client.post("/open-door", data=json.dumps({"pin": "abc"}), headers=headers)
+    assert r.status_code == 429
 
 
 def test_admin_ip_block_across_sessions(_client, app_module, monkeypatch):
-    """Same IP, rotating sessions: session counter never trips but IP does."""
+    """Same IP, rotating sessions: the per-IP admin throttle still trips."""
     counter = {"n": 0}
 
-    def fake_identifier():
+    def fake_identity():
         counter["n"] += 1
-        return "5.5.5.5", f"sess-{counter['n']}", f"id-{counter['n']}"
+        return "5.5.5.5", f"sess-{counter['n']}"
 
-    monkeypatch.setattr("app.get_client_identifier", fake_identifier)
+    monkeypatch.setattr("app.client_identity", fake_identity)
     wrong = json.dumps({"password": "nope", "remember_me": False})
     h = _std_headers()
     for _ in range(app_module.config.SESSION_MAX_ATTEMPTS):
@@ -352,26 +286,5 @@ def test_admin_ip_block_across_sessions(_client, app_module, monkeypatch):
         assert r.status_code == 403
     r = _client.post("/admin/auth", data=wrong, headers=h)
     assert r.status_code == 429
-
-
-def test_admin_ip_helpers_unit(app_module):
-    """Direct unit coverage for the admin-IP rate-limit helpers."""
-    from config import BLOCK_TIME, SESSION_MAX_ATTEMPTS, get_current_time
-    rl = app_module.rate_limiter
-    ip = "7.7.7.7"
-    blocked = False
-    for _ in range(SESSION_MAX_ATTEMPTS):
-        blocked = rl.admin_record_failure(ip)
-    assert blocked is True
-    assert rl.admin_ip_remaining(ip) > 0
-    # Success clears everything.
-    rl.admin_record_success(ip)
-    assert rl.admin_ip_remaining(ip) == 0
-    assert ip not in rl.admin_ip_failed
-    # Expired block is cleaned up lazily on the next remaining() check.
-    rl.admin_ip_failed[ip] = 1
-    rl.admin_ip_blocked_until[ip] = get_current_time() - BLOCK_TIME
-    assert rl.admin_ip_remaining(ip) == 0
-    assert ip not in rl.admin_ip_blocked_until
-    assert ip not in rl.admin_ip_failed
+    assert "blocked_until" in r.get_json()
 

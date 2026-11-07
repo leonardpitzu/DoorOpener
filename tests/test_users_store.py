@@ -5,7 +5,7 @@ import tempfile
 from unittest.mock import patch
 from datetime import datetime, timezone
 
-from users_store import UsersStore, UsersStoreError, _now_iso
+from users_store import UserConflict, UserNotFound, UsersStore, UsersStoreError, _now_iso
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_create_duplicate_user(users_store):
     """Test that creating a duplicate user fails."""
     users_store.create_user("testuser", "1234")
 
-    with pytest.raises(KeyError, match="User already exists"):
+    with pytest.raises(UserConflict, match="User already exists"):
         users_store.create_user("testuser", "5678")
 
     users = users_store.list_users()["users"]
@@ -61,7 +61,7 @@ def test_create_duplicate_pin(users_store):
     """Test that creating a user with an in-use PIN fails."""
     users_store.create_user("alice", "1234")
 
-    with pytest.raises(ValueError, match="PIN already in use"):
+    with pytest.raises(UserConflict, match="PIN already in use"):
         users_store.create_user("bob", "1234")
 
     users = users_store.list_users()["users"]
@@ -84,7 +84,7 @@ def test_update_duplicate_pin(users_store):
     users_store.create_user("alice", "1234")
     users_store.create_user("bob", "5678")
 
-    with pytest.raises(ValueError, match="PIN already in use"):
+    with pytest.raises(UserConflict, match="PIN already in use"):
         users_store.update_user("bob", pin="1234")
 
 
@@ -99,7 +99,7 @@ def test_update_user_keeps_own_pin(users_store):
 
 def test_update_nonexistent_user(users_store):
     """Test updating a user that doesn't exist."""
-    with pytest.raises(KeyError, match="User not found"):
+    with pytest.raises(UserNotFound, match="User not found"):
         users_store.update_user("nonexistent", pin="1234")
 
 
@@ -115,7 +115,7 @@ def test_delete_user(users_store):
 
 def test_delete_nonexistent_user(users_store):
     """Test deleting a user that doesn't exist."""
-    with pytest.raises(KeyError, match="User not found"):
+    with pytest.raises(UserNotFound, match="User not found"):
         users_store.delete_user("nonexistent")
 
 

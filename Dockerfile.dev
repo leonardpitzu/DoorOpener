@@ -12,8 +12,7 @@ WORKDIR /app
 COPY dooropener/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY dooropener/app.py dooropener/config.py dooropener/security.py \
-     dooropener/ha_client.py dooropener/users_store.py ./
+COPY dooropener/*.py ./
 COPY dooropener/templates/ ./templates/
 COPY dooropener/static/ ./static/
 

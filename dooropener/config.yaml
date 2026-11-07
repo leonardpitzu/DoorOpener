@@ -1,5 +1,5 @@
 name: DoorOpener
-version: "2.5.7"
+version: "2.6.0"
 slug: dooropener
 description: >-
   A secure web interface for controlling smart door openers via Home Assistant.
@@ -16,6 +16,7 @@ ingress: false
 panel_icon: mdi:door
 panel_title: DoorOpener
 webui: "http://[HOST]:[PORT:6532]"
+watchdog: "http://[HOST]:[PORT:6532]/health"
 homeassistant_api: true
 ports:
   6532/tcp: 6532
@@ -37,6 +38,7 @@ options:
   session_max_attempts: 3
   secret_key: ""
   session_cookie_secure: false
+  trusted_proxies: 0
   ha_cert_pem: ""
 schema:
   ha_url: url
@@ -52,4 +54,5 @@ schema:
   session_max_attempts: "int(1,50)"
   secret_key: str?
   session_cookie_secure: bool
+  trusted_proxies: "int(0,5)"
   ha_cert_pem: str?

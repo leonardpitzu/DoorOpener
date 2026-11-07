@@ -1,10 +1,9 @@
-"""Security helpers: rate limiting, headers, request validation."""
+"""Brute-force protection, client identity, and security headers."""
 
-import hashlib
-import logging
 import secrets
-import time
-from datetime import timedelta
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from flask import request, session
 
@@ -16,248 +15,172 @@ from config import (
     get_current_time,
 )
 
-logger = logging.getLogger("dooropener")
+# The longest a block can grow to. Also how long a client is remembered once it
+# has gone quiet (no failures, no block): forgetting it sooner would reset the backoff.
+MAX_BLOCK_TIME = timedelta(hours=24)
+_PRUNE_EVERY = timedelta(hours=1)
 
 
 # ---------------------------------------------------------------------------
-# Rate Limiter
+# Throttling
 # ---------------------------------------------------------------------------
-class RateLimiter:
-    """In-memory multi-layer rate limiter.
+@dataclass(slots=True)
+class _Record:
+    last_failure: datetime
+    penalty: timedelta  # length of this client's next block
+    failures: int = 0
+    blocked_until: datetime | None = None
 
-    Tracks per-IP, per-session, and global failed attempt counts with
-    automatic blocking after configurable thresholds.
+    @property
+    def quiet_since(self) -> datetime:
+        """When this client last failed or, if later, when its last block ended."""
+        return max(self.last_failure, self.blocked_until or self.last_failure)
+
+
+class Throttle:
+    """Blocks a client after *limit* failures, for twice as long each time it happens again.
+
+    Blocks last *block_time*, then 2x, 4x, ... up to ``MAX_BLOCK_TIME``, so waiting a
+    block out buys an attacker fewer and fewer guesses per day. A success forgets the
+    client; so does a full day with neither failures nor a block.
     """
 
-    __slots__ = (
-        "ip_failed", "ip_blocked_until", "session_failed",
-        "session_blocked_until", "global_failed", "global_last_reset",
-        "admin_ip_failed", "admin_ip_blocked_until",
-        "_last_prune",
-    )
+    def __init__(self, limit: int, block_time: timedelta = BLOCK_TIME):
+        self.limit = limit
+        self.block_time = block_time
+        self._records: dict[str, _Record] = {}
+        self._lock = threading.Lock()
+        self._next_prune = get_current_time() + _PRUNE_EVERY
+
+    def blocked_until(self, key: str) -> datetime | None:
+        """When the active block on *key* ends, or ``None`` if it is not blocked."""
+        with self._lock:
+            record = self._records.get(key)
+            until = record.blocked_until if record else None
+        return until if until and until > get_current_time() else None
+
+    def fail(self, key: str) -> datetime | None:
+        """Count a failure for *key*. Returns when the block it triggers ends, if it triggers one."""
+        now = get_current_time()
+        with self._lock:
+            self._prune(now)
+            record = self._records.get(key)
+            if record is None:
+                record = self._records[key] = _Record(last_failure=now, penalty=self.block_time)
+            record.last_failure = now
+            record.failures += 1
+            if record.failures < self.limit:
+                return None
+            record.failures = 0
+            record.blocked_until = now + record.penalty
+            record.penalty = min(record.penalty * 2, MAX_BLOCK_TIME)
+            return record.blocked_until
+
+    def reset(self, key: str) -> None:
+        """Forget *key*: its failures, its block, and its backoff."""
+        with self._lock:
+            self._records.pop(key, None)
+
+    def _prune(self, now: datetime) -> None:
+        # Drops only clients that have been quiet for a whole MAX_BLOCK_TIME, so
+        # nothing blocked is dropped, and a client that just sat out the longest
+        # block keeps its backoff.
+        if now < self._next_prune:
+            return
+        self._next_prune = now + _PRUNE_EVERY
+        stale = now - MAX_BLOCK_TIME
+        self._records = {k: r for k, r in self._records.items() if r.quiet_since > stale}
+
+
+class FailureAlarm:
+    """Counts failures from every client and goes off once an hour when they reach *threshold*.
+
+    It never blocks anyone. The throttles key on client IPs, so a global lockout would
+    let a single attacker deny the door to everyone with a handful of junk guesses.
+    """
+
+    def __init__(self, threshold: int):
+        self.threshold = threshold
+        self._window_start = get_current_time()
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def record(self) -> bool:
+        """Count one failure. True exactly when it is the one that reaches the threshold."""
+        now = get_current_time()
+        with self._lock:
+            if now - self._window_start >= timedelta(hours=1):
+                self._window_start, self._count = now, 0
+            self._count += 1
+            return self._count == self.threshold
+
+
+class RateLimiter:
+    """All brute-force state: keypad PINs by IP and by session, admin logins by IP."""
 
     def __init__(self):
-        self.ip_failed: dict[str, int] = {}
-        self.ip_blocked_until: dict[str, object] = {}
-        self.session_failed: dict[str, int] = {}
-        self.session_blocked_until: dict[str, object] = {}
-        self.global_failed = 0
-        self.global_last_reset = get_current_time()
-        self.admin_ip_failed: dict[str, int] = {}
-        self.admin_ip_blocked_until: dict[str, object] = {}
-        self._last_prune = get_current_time()
+        self.pin_ip = Throttle(MAX_ATTEMPTS)
+        self.pin_session = Throttle(SESSION_MAX_ATTEMPTS)
+        self.admin_ip = Throttle(SESSION_MAX_ATTEMPTS)
+        self.alarm = FailureAlarm(MAX_GLOBAL_ATTEMPTS_PER_HOUR)
 
-    # --- Query methods ---
+    def pin_blocked_until(self, ip: str, session_id: str) -> datetime | None:
+        return _latest(self.pin_ip.blocked_until(ip), self.pin_session.blocked_until(session_id))
 
-    def check_global_rate_limit(self) -> bool:
-        now = get_current_time()
-        if now - self.global_last_reset > timedelta(hours=1):
-            self.global_failed = 0
-            self.global_last_reset = now
-            self._prune_expired(now)
-        return self.global_failed < MAX_GLOBAL_ATTEMPTS_PER_HOUR
+    def pin_failed(self, ip: str, session_id: str) -> datetime | None:
+        """Count a wrong PIN. Returns when the block it triggers ends, if it triggers one."""
+        return _latest(self.pin_ip.fail(ip), self.pin_session.fail(session_id))
 
-    def _prune_expired(self, now) -> None:
-        """Remove expired block/failure entries to prevent unbounded memory growth."""
-        for key in [k for k, v in self.ip_blocked_until.items() if v and now >= v]:
-            del self.ip_blocked_until[key]
-            self.ip_failed.pop(key, None)
-        for key in [k for k, v in self.session_blocked_until.items() if v and now >= v]:
-            del self.session_blocked_until[key]
-            self.session_failed.pop(key, None)
-        for key in [k for k, v in self.admin_ip_blocked_until.items() if v and now >= v]:
-            del self.admin_ip_blocked_until[key]
-            self.admin_ip_failed.pop(key, None)
+    def pin_succeeded(self, ip: str, session_id: str) -> None:
+        self.pin_ip.reset(ip)
+        self.pin_session.reset(session_id)
 
-    def is_blocked(self, identifier: str, session_id: str) -> tuple[bool, float]:
-        """Return (blocked, remaining_seconds) checking all layers."""
-        # Persistent session cookie first
-        sess_block_ts = session.get("blocked_until_ts")
-        if sess_block_ts and time.time() < float(sess_block_ts):
-            return True, float(sess_block_ts) - time.time()
 
-        now = get_current_time()
-        remaining = 0.0
-
-        sb = self.session_blocked_until.get(session_id)
-        if sb and now < sb:
-            remaining = max(remaining, (sb - now).total_seconds())
-
-        ib = self.ip_blocked_until.get(identifier)
-        if ib and now < ib:
-            remaining = max(remaining, (ib - now).total_seconds())
-
-        return remaining > 0, remaining
-
-    def blocked_until_ts(self, identifier: str, session_id: str) -> float | None:
-        """Return epoch timestamp for the latest active block, or None."""
-        now = get_current_time()
-        ts = None
-
-        sb = self.session_blocked_until.get(session_id)
-        if sb and now < sb:
-            ts = sb.timestamp()
-
-        ib = self.ip_blocked_until.get(identifier)
-        if ib and now < ib:
-            ip_ts = ib.timestamp()
-            ts = max(ts or ip_ts, ip_ts)
-
-        return ts
-
-    # --- Mutation methods ---
-
-    def record_failure(
-        self, identifier: str, session_id: str
-    ) -> tuple[str, int]:
-        """Record a failed attempt.
-
-        Returns (reason_key, remaining_attempts).
-        reason_key: ``"session_blocked"`` | ``"ip_blocked"`` | ``"failed"``
-        """
-        now = get_current_time()
-        self.ip_failed[identifier] = self.ip_failed.get(identifier, 0) + 1
-        self.session_failed[session_id] = self.session_failed.get(session_id, 0) + 1
-        self.global_failed += 1
-
-        if self.session_failed[session_id] >= SESSION_MAX_ATTEMPTS:
-            self.session_blocked_until[session_id] = now + BLOCK_TIME
-            session["blocked_until_ts"] = (now + BLOCK_TIME).timestamp()
-            return "session_blocked", 0
-
-        if self.ip_failed[identifier] >= MAX_ATTEMPTS:
-            self.ip_blocked_until[identifier] = now + BLOCK_TIME
-            return "ip_blocked", 0
-
-        remaining = min(
-            SESSION_MAX_ATTEMPTS - self.session_failed.get(session_id, 0),
-            MAX_ATTEMPTS - self.ip_failed.get(identifier, 0),
-        )
-        return "failed", remaining
-
-    def record_success(self, identifier: str, session_id: str) -> None:
-        """Clear all rate-limiting state for a successful authentication."""
-        self.ip_failed.pop(identifier, None)
-        self.session_failed.pop(session_id, None)
-        if identifier in self.ip_blocked_until:
-            del self.ip_blocked_until[identifier]
-        if session_id in self.session_blocked_until:
-            del self.session_blocked_until[session_id]
-        session.pop("blocked_until_ts", None)
-
-    # --- Admin auth (per-IP, catches multi-session brute force) ---
-
-    def admin_ip_remaining(self, ip: str) -> float:
-        """Seconds left on an active admin-IP block for *ip*, else 0."""
-        now = get_current_time()
-        until = self.admin_ip_blocked_until.get(ip)
-        if until and now < until:
-            return (until - now).total_seconds()
-        # Expired: clean up eagerly so the counter resets for the next attempt.
-        if until:
-            self.admin_ip_blocked_until.pop(ip, None)
-            self.admin_ip_failed.pop(ip, None)
-        return 0.0
-
-    def admin_record_failure(self, ip: str) -> bool:
-        """Count a failed admin login for *ip*. Returns True if it now blocks."""
-        self.admin_ip_failed[ip] = self.admin_ip_failed.get(ip, 0) + 1
-        if self.admin_ip_failed[ip] >= SESSION_MAX_ATTEMPTS:
-            self.admin_ip_blocked_until[ip] = get_current_time() + BLOCK_TIME
-            return True
-        return False
-
-    def admin_record_success(self, ip: str) -> None:
-        """Clear admin-IP counters/blocks on a successful admin login."""
-        self.admin_ip_failed.pop(ip, None)
-        self.admin_ip_blocked_until.pop(ip, None)
+def _latest(*times: datetime | None) -> datetime | None:
+    return max((t for t in times if t), default=None)
 
 
 # ---------------------------------------------------------------------------
 # Request helpers
 # ---------------------------------------------------------------------------
-def get_client_identifier() -> tuple[str, str, str]:
-    """Return ``(primary_ip, session_id, composite_identifier)``."""
-    primary_ip = request.remote_addr
+def client_identity() -> tuple[str, str]:
+    """The client's IP and session id: the only keys the throttles use.
+
+    Nothing else a client sends (User-Agent, Accept-Language, ...) may go into a
+    throttle key, since varying it would hand an attacker a fresh counter. The IP is
+    only as trustworthy as the ``trusted_proxies`` setting.
+    """
     session_id = session.get("_session_id")
     if not session_id:
-        session_id = secrets.token_hex(16)
-        session["_session_id"] = session_id
-
-    ua = request.headers.get("User-Agent", "")[:100]
-    lang = request.headers.get("Accept-Language", "")[:50]
-    fp = hashlib.sha256((ua + lang).encode()).hexdigest()[:8]
-    identifier = f"{primary_ip}:{fp}"
-    return primary_ip, session_id, identifier
+        session_id = session["_session_id"] = secrets.token_hex(16)
+    return request.remote_addr or "unknown", session_id
 
 
 def add_security_headers(response, csp_nonce: str | None = None):
     """Attach hardening headers to every response."""
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = (
-        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
-        "magnetometer=(), gyroscope=(), fullscreen=(self), "
-        "browsing-topics=(), run-ad-auction=(), join-ad-interest-group=(), "
-        "private-aggregation=(), attribution-reporting=(), compute-pressure=()"
-    )
-    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
-    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-
-    if csp_nonce:
-        nonce_src = f"'nonce-{csp_nonce}'"
-        response.headers["Content-Security-Policy"] = (
+    script_src = f"'self' 'nonce-{csp_nonce}'" if csp_nonce else "'self'"
+    response.headers.update({
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": (
+            "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+            "magnetometer=(), gyroscope=(), fullscreen=(self), "
+            "browsing-topics=(), run-ad-auction=(), join-ad-interest-group=(), "
+            "private-aggregation=(), attribution-reporting=(), compute-pressure=()"
+        ),
+        "X-Permitted-Cross-Domain-Policies": "none",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Content-Security-Policy": (
             "default-src 'self'; "
-            f"script-src 'self' {nonce_src}; "
+            f"script-src {script_src}; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self'; "
-            "connect-src 'self' https://api.github.com; "
+            "connect-src 'self'; "
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-        )
-    else:
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "font-src 'self'; "
-            "connect-src 'self' https://api.github.com; "
-            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-        )
-    response.headers["Cache-Control"] = (
-        "no-store, no-cache, must-revalidate, max-age=0"
-    )
-    response.headers["Pragma"] = "no-cache"
+        ),
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    })
     return response
-
-
-def is_request_suspicious() -> bool:
-    """Detect obviously automated / bot traffic.
-
-    Does NOT flag common tools (curl, wget, python-requests) since those
-    are used by health-checks and legitimate API clients.
-    """
-    ua = request.headers.get("User-Agent", "")
-    if not ua or len(ua) < 10:
-        return True
-    bot_patterns = ["bot", "crawler", "spider", "scraper"]
-    return any(p in ua.lower() for p in bot_patterns)
-
-
-def validate_pin_input(pin) -> tuple[bool, str | None]:
-    """Validate PIN format. Returns ``(valid, cleaned_pin)``."""
-    try:
-        if not isinstance(pin, str):
-            return False, None
-        if not pin.isdigit() or not (4 <= len(pin) <= 8):
-            return False, None
-        return True, pin
-    except Exception:
-        return False, None
-
-
-def get_delay_seconds(attempt_count: int) -> int:  # used by tests
-    """Calculate progressive delay: 1s, 2s, 4s, 8s, 16s (informational only)."""
-    return min(2 ** (attempt_count - 1), 16) if attempt_count > 0 else 0
