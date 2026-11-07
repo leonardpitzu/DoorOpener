@@ -9,6 +9,7 @@ set -euo pipefail
 export DOOROPENER_OPTIONS_PATH="/data/options.json"
 export DOOROPENER_LOG_DIR="/data/logs"
 export USERS_STORE_PATH="/data/users.json"
+export DOOROPENER_SECRET_KEY_FILE="/data/secret_key"
 
 echo "[dooropener] Starting DoorOpener..."
 cd /app

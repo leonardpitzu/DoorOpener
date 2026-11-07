@@ -12,39 +12,48 @@ A PIN keypad for your door, opened through Home Assistant.
 2. Find **DoorOpener** in the store and click **Install**.
 3. Set `entity_id` (see below) and click **Start**.
 
-The keypad is on port 6532. The admin panel is in Home Assistant's sidebar
-(the door icon).
+The keypad is on port 6532. The admin panel opens with **Open Web UI** on the
+app's page; switch on **Show in sidebar** there for a sidebar entry too.
 
 ## Configuration
 
-| Option | Description | Required |
-|--------|-------------|----------|
-| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | **Yes** |
-| `battery_entity` | Battery sensor entity for monitoring | No |
-| `ha_url` | Home Assistant URL. Leave the default to use the app's own connection | No |
-| `ha_token` | Long-lived access token. Leave empty to use the app's own token | No |
-| `admin_password` | Also offer the admin panel on port 6532, behind this password (see below). Empty: only in the sidebar | No |
-| `ssl` | Serve HTTPS with the certificate in `/ssl` (see below) | No |
-| `certfile` / `keyfile` | Certificate and key file names in `/ssl` (default: `fullchain.pem` / `privkey.pem`) | No |
-| `test_mode` | Simulate door actions without calling HA | No |
-| `max_attempts` | Failed PIN attempts per IP before blocking | No |
-| `block_time_minutes` | Length of the first block; each further block doubles, up to 24 hours | No |
-| `session_max_attempts` | Failed attempts per browser session (and admin logins per IP) before blocking | No |
-| `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert | No |
-| `trusted_proxies` | Reverse proxies in front of DoorOpener (see below); `0` when clients connect directly | No |
-| `secret_key` | Session signing key, 16+ characters (random on every start if empty) | No |
-| `session_cookie_secure` | Send cookies over HTTPS only; enable behind an HTTPS reverse proxy (implied by `ssl`) | No |
+The app talks to Home Assistant through the Supervisor and keeps its session
+key in `/data`, so there is no URL, token, port or key to fill in. The host port
+is in the **Network** section.
+
+| Option | What it does |
+|--------|--------------|
+| **Door entity** | The switch, lock, input_boolean or button that opens the door, e.g. `button.intercom_open`. Required |
+| **HTTPS** | Serve the keypad over HTTPS with the certificate in `/ssl` (see below) |
+| **Test mode** | Go through the motions without opening the door |
+| **Wrong PINs per device** | Wrong PINs from one IP address before it is blocked |
+| **Wrong PINs per browser** | Wrong PINs from one browser before it is blocked; also the wrong admin passwords allowed per IP address |
+| **First block (minutes)** | How long the first block lasts. Each further block doubles, up to 24 hours; a correct PIN resets it |
+| **Alert threshold per hour** | Wrong PINs per hour, from everyone together, that raise a brute-force alert. Never a lockout |
+
+Optional, under **Show unused optional configuration options**:
+
+| Option | What it does |
+|--------|--------------|
+| **Battery sensor** | A sensor with the opener's battery level in %, shown on the keypad |
+| **Admin password on the keypad port** | Also offer the admin panel on port 6532, behind this password (see below) |
+| **Certificate file** / **Private key file** | Files in `/ssl`, if not `fullchain.pem` / `privkey.pem` |
+| **Reverse proxies in front** | See below; `0` (the default) when browsers connect directly |
+
+The session cookie is HTTPS-only whenever the keypad is reached over HTTPS;
+there is no setting for it.
 
 ### The admin panel
 
-Open **DoorOpener** in Home Assistant's sidebar. Home Assistant has already
-logged you in, with its two-factor step if you use one, so there is no password:
-any Home Assistant administrator gets in, and the audit log records who. This
-works wherever your Home Assistant app works, at home or away.
+Open DoorOpener's web UI from Home Assistant (**Open Web UI**, or the sidebar
+entry). Home Assistant has already logged you in, with its two-factor step if
+you use one, so there is no password: any Home Assistant administrator gets in,
+and the audit log records who. This works wherever your Home Assistant app
+works, at home or away.
 
-With `admin_password` empty (the default), port 6532 serves only the keypad,
-and nobody on the internet can try an admin password at all. Set a password to
-also offer the panel there (the gear icon on the keypad).
+Without an admin password (the default), port 6532 serves only the keypad, and
+nobody on the internet can try an admin password at all. Set one to also offer
+the panel there (the gear icon on the keypad).
 
 ### Users and guest PINs
 
@@ -72,11 +81,11 @@ Every opening fires a `dooropener_door_opened` event with the user's name
 by alice"). Use the event in automations, for example to be told when a guest
 arrives. Test mode sends neither.
 
-### HTTPS (`ssl`)
+### HTTPS
 
-Turn on `ssl` and DoorOpener serves HTTPS itself, on the same port, with the
+Turn on **HTTPS** and DoorOpener serves HTTPS itself, on the same port, with the
 certificate in Home Assistant's `/ssl` folder. With the Let's Encrypt app,
-nothing else is needed: `certfile` and `keyfile` default to the
+nothing else is needed: the certificate and key files default to the
 `fullchain.pem` and `privkey.pem` it writes there, and a renewed certificate is
 served from the next connection on, without a restart. The watchdog and
 **Open Web UI** switch to https by themselves.
@@ -86,13 +95,13 @@ Open DoorOpener by the name on the certificate (for example
 certificate or key is missing, or they do not match, DoorOpener does not start
 and its log says why.
 
-With `ssl` on, a client must finish each request within 15 seconds, so a few
+With HTTPS on, a client must finish each request within 15 seconds, so a few
 deliberately slow connections cannot freeze the keypad.
 
-### Reverse proxies (`trusted_proxies`)
+### Reverse proxies
 
 Every brute-force limit counts per client IP, so DoorOpener must know the real
-one. Leave `trusted_proxies` at `0` when browsers reach port 6532 directly: the
+one. Leave **Reverse proxies in front** at `0` when browsers reach port 6532 directly: the
 `X-Forwarded-For` header is then ignored, because anyone could forge it. Set it
 to `1` when exactly one reverse proxy (NGINX Proxy Manager, Caddy, a Cloudflare
 tunnel, ...) sits in front, and only if port 6532 cannot be reached around it.
@@ -103,7 +112,7 @@ wrong PINs block everyone.
 
 - **Brute-force blocks** double with every repeat (5 min, 10 min, 20 min, ...
   up to 24 hours) and reset when the client gets a PIN right.
-- **Alerts, not lockouts**: when `max_global_attempts_per_hour` failures pile
+- **Alerts, not lockouts**: when **Alert threshold per hour** failures pile
   up within an hour, DoorOpener writes it to the audit log and raises a
   persistent notification (id `dooropener_alert`) in Home Assistant. Valid PINs
   keep working.

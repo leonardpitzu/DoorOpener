@@ -1,0 +1,56 @@
+configuration:
+  entity_id:
+    name: Door entity
+    description: >-
+      The switch, lock, input_boolean or button that opens the door, for
+      example button.intercom_open.
+  ssl:
+    name: HTTPS
+    description: >-
+      Serve the keypad over HTTPS with the certificate in Home Assistant's /ssl
+      folder (the Let's Encrypt app puts it there). Renewed certificates are
+      picked up by themselves.
+  test_mode:
+    name: Test mode
+    description: Go through the motions without opening the door.
+  max_attempts:
+    name: Wrong PINs per device
+    description: Wrong PINs from one IP address before it is blocked.
+  session_max_attempts:
+    name: Wrong PINs per browser
+    description: >-
+      Wrong PINs from one browser before it is blocked. Also the wrong admin
+      passwords allowed per IP address.
+  block_time_minutes:
+    name: First block (minutes)
+    description: >-
+      How long the first block lasts. Each further block doubles, up to 24
+      hours; a correct PIN resets it.
+  max_global_attempts_per_hour:
+    name: Alert threshold per hour
+    description: >-
+      Wrong PINs per hour, from everyone together, that send a brute-force
+      alert to Home Assistant (notification dooropener_alert). Never locks
+      anyone out.
+  battery_entity:
+    name: Battery sensor
+    description: A sensor with the opener's battery level in %, shown on the keypad.
+  admin_password:
+    name: Admin password on the keypad port
+    description: >-
+      Leave empty to keep the admin panel inside Home Assistant only (Open Web
+      UI, or Show in sidebar). Set one to also reach it from the keypad's gear
+      icon.
+  certfile:
+    name: Certificate file
+    description: The certificate with its full chain, in /ssl. Default fullchain.pem.
+  keyfile:
+    name: Private key file
+    description: The certificate's private key, in /ssl. Default privkey.pem.
+  trusted_proxies:
+    name: Reverse proxies in front
+    description: >-
+      0 (default) when browsers connect to the keypad port directly. 1 behind
+      one reverse proxy, and only if the port cannot be reached around it.
+network:
+  6532/tcp: Keypad port

@@ -20,7 +20,7 @@ DoorOpener provides a web-based keypad interface to remotely open doors connecte
 - **Audio feedback** - success chimes and failure sounds
 - **Battery monitoring** - real-time battery level for Zigbee devices
 - **Multi-layer security** - rate limiting and IP blocking (see [Security](#security))
-- **Admin UI** - user management with a PIN generator, and an audit log viewer; in Home Assistant's sidebar, behind its login
+- **Admin UI** - user management with a PIN generator, and an audit log viewer; inside Home Assistant, behind its login
 - **Home Assistant events** - every opening fires `dooropener_door_opened` with the user's name, and adds a logbook entry
 - **HTTPS** - served by DoorOpener itself; renewed certificates are picked up without a restart
 - **Test mode** - safe development without triggering the actual door
@@ -37,12 +37,14 @@ DoorOpener provides a web-based keypad interface to remotely open doors connecte
    ```
 3. Find **DoorOpener** in the store and click **Install**.
 4. Configure `entity_id` in the app options.
-5. Click **Start**. The keypad is on port 6532; the admin panel appears in
-   Home Assistant's sidebar with a door icon, behind your Home Assistant login.
+5. Click **Start**. The keypad is on port 6532; the admin panel opens with
+   **Open Web UI**, behind your Home Assistant login.
 
-> As an app, leave `ha_url` and `ha_token` at their defaults: the app's own
-> Supervisor connection is used. `admin_password` is optional there; set it only
-> to also offer the admin panel on port 6532. See the app's documentation tab.
+> As an app, DoorOpener talks to Home Assistant through the Supervisor and keeps
+> its session key in `/data`, so its configuration page has no URL, token, port
+> or key to fill in. Open the admin panel with **Open Web UI** on the app's page,
+> or switch on **Show in sidebar** there. `admin_password` is optional; set it
+> only to also offer the admin panel on port 6532. See the app's documentation tab.
 
 ### Docker
 
@@ -98,7 +100,6 @@ cp options.json.example options.json
   "max_global_attempts_per_hour": 50,
   "session_max_attempts": 3,
   "secret_key": "",
-  "session_cookie_secure": false,
   "trusted_proxies": 0,
   "ha_cert_pem": ""
 }
@@ -120,8 +121,7 @@ cp options.json.example options.json
 | `block_time_minutes` | First block's length; each further block doubles, up to 24 h | `5` |
 | `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert (never a lockout) | `50` |
 | `session_max_attempts` | Failed attempts per browser session before blocking | `3` |
-| `secret_key` | Session signing key, 16+ characters; empty means random per start (or set `FLASK_SECRET_KEY`) | `""` |
-| `session_cookie_secure` | Set `true` behind an HTTPS reverse proxy (implied by `ssl`) | `false` |
+| `secret_key` | Session signing key, 16+ characters (or set `FLASK_SECRET_KEY`); empty means one kept in `DOOROPENER_SECRET_KEY_FILE`, or a random one per start | `""` |
 | `trusted_proxies` | Reverse proxies whose `X-Forwarded-For` is believed; `0` = clients connect directly | `0` |
 | `ha_cert_pem` | Inline PEM certificate for self-signed HA (see below) | `""` |
 
@@ -141,9 +141,14 @@ DOOROPENER_SSL_DIR=/ssl
 #   python3 -c 'import secrets; print(secrets.token_hex(32))'
 FLASK_SECRET_KEY=
 
-# Set true behind an HTTPS reverse proxy (implied by "ssl": true)
-SESSION_COOKIE_SECURE=true
+# Without a secret_key: a persistent file DoorOpener keeps a generated key in
+# (an app uses /data/secret_key)
+DOOROPENER_SECRET_KEY_FILE=/app/logs/secret_key
 ```
+
+The session cookie is HTTPS-only whenever the request came over HTTPS:
+DoorOpener's own (`ssl`), or a reverse proxy's when `trusted_proxies` is set.
+There is nothing to configure for it.
 
 Configuration priority: environment variables > `options.json` defaults.
 
@@ -192,8 +197,8 @@ With `ssl` on:
 - DoorOpener refuses to start while the certificate or key is missing, or the
   two do not belong together, and the log says which files it tried.
 
-Behind your own HTTPS reverse proxy, leave `ssl` off and set
-`session_cookie_secure` and `trusted_proxies` instead.
+Behind your own HTTPS reverse proxy, leave `ssl` off and set `trusted_proxies`
+instead; the cookie then follows the proxy's HTTPS.
 
 ### Home Assistant with a self-signed certificate
 
@@ -225,7 +230,7 @@ The certificate is written to a temporary file at startup and used for all Home 
 1. **Access interface** - visit `http://localhost:6532` (`https://` and the certificate's name with `ssl` on).
 2. **Enter PIN** - use the visual keypad (4-8 digit PIN).
 3. **Auto-submit** - the door opens automatically when a valid-length PIN is entered.
-4. **Admin access** - in Home Assistant's sidebar, or the gear icon on the keypad when `admin_password` is set.
+4. **Admin access** - **Open Web UI** on the app's page (or its sidebar entry), or the gear icon on the keypad when `admin_password` is set.
 
 ## Security
 
@@ -257,7 +262,7 @@ Every response includes:
 
 - `Content-Security-Policy` - self-only; scripts are static files, never inline
 - `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY` (`SAMEORIGIN` for the pages Home Assistant shows in its sidebar)
+- `X-Frame-Options: DENY` (`SAMEORIGIN` for the admin pages Home Assistant shows in its own frame)
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy` - geolocation, camera, microphone disabled
 - `Cache-Control: no-store`
@@ -318,7 +323,7 @@ Assistant has authenticated the user, and only its administrators get in.
 | `dooropener/security.py` | `Throttle` (per-key backoff), `FailureAlarm`, `RateLimiter`, client identity, security headers |
 | `dooropener/pins.py` | PIN validation, hashing, constant-time comparison, the PIN generator |
 | `dooropener/access.py` | When a PIN works: validity dates, weekdays and hours, one-time PINs |
-| `dooropener/ingress.py` | The admin panel in Home Assistant's sidebar: the ingress listener (apps only) |
+| `dooropener/ingress.py` | The admin panel inside Home Assistant: the ingress listener (apps only) |
 | `dooropener/audit.py` | `AuditLog`: writes, reads back and clears the audit trail |
 | `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` - dispatches `switch`/`lock`/`input_boolean`/`button` services; best-effort alerts, opening events and logbook entries, skipped without Home Assistant |
 | `dooropener/users_store.py` | Atomic JSON-based user CRUD with hashed PINs, access rules and usage tracking |

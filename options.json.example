@@ -14,7 +14,6 @@
     "max_global_attempts_per_hour": 50,
     "session_max_attempts": 3,
     "secret_key": "",
-    "session_cookie_secure": false,
     "trusted_proxies": 0,
     "ha_cert_pem": ""
 }
