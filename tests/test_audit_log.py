@@ -136,3 +136,9 @@ def test_trimming_keeps_the_logs_permissions(tmp_path):
     AuditLog(str(path))  # drops the garbage line, rewriting the file
     assert path.read_text() == ""
     assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_a_new_log_is_private(tmp_path):
+    AuditLog(str(tmp_path / "logs" / "log.txt"))
+    assert (tmp_path / "logs" / "log.txt").stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "logs").stat().st_mode & 0o777 == 0o700

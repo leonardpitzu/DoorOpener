@@ -51,7 +51,7 @@ def test_a_session_without_a_usable_login_time_is_rejected(client, login_time):
 
 
 def test_login_sets_the_server_checked_login_time(client):
-    r = client.post("/admin/auth", json={"password": "testpass", "remember_me": True})
+    r = client.post("/admin/auth", json={"password": "testpass-0123", "remember_me": True})
     assert r.status_code == 200
     with client.session_transaction() as s:
         assert s.permanent
@@ -65,8 +65,15 @@ def test_a_non_ascii_admin_password_works(client, monkeypatch):
     assert client.post("/admin/auth", json={"password": "türschloss-2026"}).status_code == 403
 
 
+def test_a_hashed_admin_password_logs_in(client, monkeypatch):
+    import pins
+    monkeypatch.setattr(config, "admin_password", pins.hash_password("a-long-admin-password"))
+    assert client.post("/admin/auth", json={"password": "a-long-admin-password"}).status_code == 200
+    assert client.post("/admin/auth", json={"password": "a-long-admin-passwore"}).status_code == 403
+
+
 def test_a_non_string_password_is_just_wrong(client):
-    assert client.post("/admin/auth", json={"password": ["testpass"]}).status_code == 403
+    assert client.post("/admin/auth", json={"password": ["testpass-0123"]}).status_code == 403
 
 
 def test_generate_pin_requires_admin(client):

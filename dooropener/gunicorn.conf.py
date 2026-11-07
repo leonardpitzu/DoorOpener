@@ -16,6 +16,9 @@ bind = f"0.0.0.0:{_config.server_port}"
 workers = 1
 threads = 8
 timeout = 60
+# No gunicornc control socket: nothing uses it, and it needs a writable home
+# folder, which the standalone container's unprivileged user does not have.
+control_socket_disable = True
 
 if _config.ssl_enabled:
     certfile = _config.ssl_certfile

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import tls
+from pins import MIN_ADMIN_PASSWORD_LENGTH, is_password_hash
 
 logger = logging.getLogger("dooropener")
 
@@ -57,6 +58,25 @@ except FileNotFoundError as _e:
 if isinstance(_opts.get("settings"), dict):
     _opts = {**_opts, **_opts["settings"]}
 
+
+def _secret(name: str, option: str, opts: Mapping = _opts, env: Mapping[str, str] = os.environ) -> str:
+    """A secret from the environment variable *name*, from the file *name*_FILE
+    names (a Docker secret), or else from options.json's *option*.
+
+    Standalone, this keeps the admin password and the Home Assistant token out of
+    options.json. Raises RuntimeError when the named file cannot be read.
+    """
+    if env.get(name, "").strip():
+        return env[name].strip()
+    path = env.get(name + "_FILE", "").strip()
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError as e:
+            raise RuntimeError(f"Refusing to start: {name}_FILE names {path}, which cannot be read ({e})") from e
+    return str(opts.get(option) or "").strip()
+
 # ---------------------------------------------------------------------------
 # Home Assistant
 # ---------------------------------------------------------------------------
@@ -71,12 +91,12 @@ ha_app: bool = bool(os.environ.get("SUPERVISOR_TOKEN"))
 def _ha_endpoint(opts: Mapping, env: Mapping[str, str]) -> tuple[str, str]:
     """The Home Assistant base URL and access token to use.
 
-    Defaults to the Supervisor proxy, and to the Supervisor's own token when
-    ``ha_token`` is left empty. A trailing ``/api`` is dropped, since every call
-    appends ``/api/...`` itself.
+    Defaults to the Supervisor proxy, and to the Supervisor's own token when no
+    token is given (``DOOROPENER_HA_TOKEN``, its ``_FILE``, or ``ha_token``). A
+    trailing ``/api`` is dropped, since every call appends ``/api/...`` itself.
     """
     url = (opts.get("ha_url") or SUPERVISOR_URL).strip().rstrip("/").removesuffix("/api")
-    token = (opts.get("ha_token") or "").strip() or env.get("SUPERVISOR_TOKEN", "")
+    token = _secret("DOOROPENER_HA_TOKEN", "ha_token", opts, env) or env.get("SUPERVISOR_TOKEN", "")
     return url, token
 
 
@@ -249,15 +269,22 @@ _PLACEHOLDER_SECRETS = {
 }
 MIN_SECRET_KEY_LENGTH = 16
 
-# The admin password guards the admin panel on DoorOpener's own port. A Home
-# Assistant app also has the panel inside Home Assistant, behind your Home
-# Assistant login, so there the password is optional: without one, the panel is
-# not offered on the public port at all.
-admin_password: str = (_opts.get("admin_password") or "").strip()
+# The admin password guards the admin panel on DoorOpener's own port, the one
+# way in standalone. A Home Assistant app also has the panel inside Home
+# Assistant, behind your Home Assistant login, so there the password is
+# optional: without one, the panel is not offered on the public port at all.
+# It may be given as a hash (python pins.py hash-password), so that the
+# configuration does not hold the password itself.
+admin_password: str = _secret("DOOROPENER_ADMIN_PASSWORD", "admin_password")
 if admin_password.lower() in _DEFAULT_PASSWORDS and (admin_password or not ha_app):
     raise RuntimeError(
         "Refusing to start: admin_password is empty or a well-known default, so anyone "
         "could log in as admin. Set a real password in the configuration."
+    )
+if admin_password and not is_password_hash(admin_password) and len(admin_password) < MIN_ADMIN_PASSWORD_LENGTH:
+    raise RuntimeError(
+        f"Refusing to start: admin_password is shorter than {MIN_ADMIN_PASSWORD_LENGTH} characters. "
+        "It guards the admin panel on the keypad port; choose a longer one."
     )
 public_admin: bool = bool(admin_password)
 
@@ -295,3 +322,8 @@ _secret_key_file = os.environ.get("DOOROPENER_SECRET_KEY_FILE", "").strip()
 if secret_key is None and _secret_key_file:
     secret_key = _kept_secret_key(_secret_key_file)
 random_secret_warning: bool = secret_key is None
+
+# The PIN key: mixed into every stored PIN hash, kept apart from users.json (see
+# pins). The app keeps it in /data (run.sh names it); without a setting it sits
+# next to users.json. Standalone it may be a Docker secret, outside ./data.
+pin_key_file: str = os.environ.get("DOOROPENER_PIN_KEY_FILE", "").strip()

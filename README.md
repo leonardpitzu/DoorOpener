@@ -7,7 +7,7 @@ off when their stay ends. Strangers who guess PINs are blocked and you get an
 alert.
 
 [![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-3.0.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-3.1.0-blue?style=flat-square)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
 
 ![The keypad on a phone: entering a PIN; a PIN for two doors offering Barrier and Door; and on the barrier's shortcut page, the owner's phone told "This PIN can't open Barrier."](docs/keypad.webp)
@@ -84,6 +84,8 @@ Docker container anywhere on your network that can reach Home Assistant.
 | **HTTPS certificate** | The Let's Encrypt or DuckDNS app's files in `/ssl`, nothing to copy | Your certificate files, mounted into the container |
 | **Time zone** | Home Assistant's | `TZ` |
 | **Data** | `/data`, inside Home Assistant's backups | `./data` next to `docker-compose.yml`, for you to back up |
+| **Secrets** | In the app's options, kept by the Supervisor | `options.json`, or environment variables and Docker secrets files |
+| **Runs as** | Root, inside the app's container | Your own user (`PUID`/`PGID`), never root |
 | **Updates** | Offered by Home Assistant (and automatic if you like) | `git pull` and a rebuild |
 
 **Without any Home Assistant**, the standalone container starts anyway. The
@@ -148,12 +150,18 @@ In `data/options.json`, set at least:
 
 - `doors`: your doors, as on the app's configuration page (see
   [Doors](#doors)).
-- `settings.admin_password`: the admin panel's password. DoorOpener refuses to
-  start with an empty one or a well-known default.
+- `settings.admin_password`: the admin panel's password. It is the only lock on
+  the panel, so DoorOpener refuses to start with one shorter than 12
+  characters, an empty one or a well-known default. To keep it out of the file,
+  see [Keeping secrets out of options.json](#keeping-secrets-out-of-optionsjson).
 - `ha_url` and `ha_token`: your Home Assistant and the token from above.
 
-In `.env`, set `TZ` to the door's time zone, for example `Europe/Bucharest`.
-Schedules and guests' dates are read in it, and it defaults to UTC.
+In `.env`:
+- Set `TZ` to the door's time zone, for example `Europe/Bucharest`. Schedules
+  and guests' dates are read in it, and it defaults to UTC.
+- If your user is not 1000, set `PUID` and `PGID` to your user and group ids
+  (`id -u`, `id -g`). The container runs as that user, never as root, so the
+  files in `./data` belong to you.
 
 ### 3. Start it
 
@@ -169,12 +177,43 @@ The keypad is at `http://<host>:6532` and the admin panel at
 | File | What it is |
 |---|---|
 | `options.json` | Your configuration (read only) |
-| `users.json` | Users, their doors and rules, and their PINs, hashed |
-| `secret_key` | The key that signs logins, so they survive restarts |
+| `users.json` | Users, their doors and rules, and their PINs, hashed with the PIN key |
+| `pin_key` | The PIN key: without it, `users.json` cannot be searched for PINs. **Losing it loses every PIN** |
+| `secret_key` | The key that signs logins, so they survive restarts. Losing it only logs you out |
 | `logs/log.txt` | The audit log: the last 180 days, at most 5 MB |
 
-`users.json` and `secret_key` are readable by their owner only. Back up the
-whole folder.
+Everything but `options.json` is readable by its owner (you) only. Back up the
+whole folder: `users.json` without its `pin_key` is useless.
+
+### Keeping secrets out of options.json
+
+The admin password and the Home Assistant token can come from environment
+variables or files instead of `options.json`:
+
+| Secret | Variable | Or a file named by |
+|---|---|---|
+| Admin password | `DOOROPENER_ADMIN_PASSWORD` | `DOOROPENER_ADMIN_PASSWORD_FILE` |
+| Home Assistant token | `DOOROPENER_HA_TOKEN` | `DOOROPENER_HA_TOKEN_FILE` |
+| PIN key | | `DOOROPENER_PIN_KEY_FILE` (any secret of 32+ characters) |
+| Login-signing key | `FLASK_SECRET_KEY` | `DOOROPENER_SECRET_KEY_FILE` |
+
+`docker-compose.yml` has the Docker secrets lines ready, commented out: put each
+secret in its own file under `./secrets`, readable by your user, and uncomment
+them.
+
+To keep the PIN key out of `./data` too, so that a copy of that folder holds no
+way to the PINs, point `DOOROPENER_PIN_KEY_FILE` at a secret of its own. Then
+back that secret up separately.
+
+The admin password can also be stored as a hash, so that neither the file nor
+the environment holds the password itself:
+
+```bash
+docker compose run --rm dooropener python pins.py hash-password
+```
+
+Put the `scrypt:...` line it prints in `admin_password`, or in the admin
+password secret.
 
 To serve HTTPS or sit behind a reverse proxy, see
 [Choose a setup](#choose-a-setup-https-a-reverse-proxy-or-plain-http).
@@ -193,9 +232,10 @@ Read [Upgrading](#upgrading) before a new major version.
 ```bash
 docker build -f Dockerfile.dev -t dooropener .
 docker run -d --name dooropener --restart unless-stopped -p 6532:6532 \
-  -e TZ=Europe/Bucharest \
+  --user "$(id -u):$(id -g)" -e TZ=Europe/Bucharest \
   -e DOOROPENER_OPTIONS_PATH=/data/options.json -e USERS_STORE_PATH=/data/users.json \
   -e DOOROPENER_LOG_DIR=/data/logs -e DOOROPENER_SECRET_KEY_FILE=/data/secret_key \
+  -e DOOROPENER_PIN_KEY_FILE=/data/pin_key \
   -v "$PWD/data:/data" dooropener
 ```
 
@@ -254,7 +294,7 @@ paths (`admin`, `static`, `health`, `battery`, `open-door`).
 | `certfile` | The certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
 | `keyfile` | Its private key: a file name in `/ssl`, or a full path | `privkey.pem` |
 | `trusted_proxies` | Reverse proxies in front of DoorOpener: `0` when browsers connect directly, `1` behind one | `0` |
-| `admin_password` | The admin panel's password on the keypad port. Required standalone. In the app it is optional, and without it the panel is only inside Home Assistant | |
+| `admin_password` | The admin panel's password on the keypad port, at least 12 characters, or a hash from `python pins.py hash-password`. Required standalone. In the app it is optional, and without it the panel is only inside Home Assistant | |
 | `report_to_ha` | Send openings, and refusals of someone's own PIN, to Home Assistant as events and logbook entries. The brute-force alert is sent either way | `true` |
 | `max_attempts` | Wrong PINs from one IP address before it is blocked | `5` |
 | `session_max_attempts` | Wrong PINs from one browser before it is blocked; also the wrong admin passwords allowed per IP address | `3` |
@@ -270,7 +310,7 @@ The app gets these from the Supervisor. Standalone, they go at the top level of
 | Key | What it is | Default |
 |---|---|---|
 | `ha_url` | Home Assistant's address. A trailing `/api` is ignored | |
-| `ha_token` | A long-lived access token, preferably an administrator's | |
+| `ha_token` | A long-lived access token, preferably an administrator's. Or `DOOROPENER_HA_TOKEN` / `_FILE` | |
 | `ha_cert_pem` | Home Assistant's own certificate (PEM), when `ha_url` is HTTPS with a self-signed or private-CA certificate | |
 | `port` | The port to listen on; `DOOROPENER_PORT` wins | `6532` |
 | `secret_key` | The key that signs logins, 16+ characters; `FLASK_SECRET_KEY` wins. Leave it empty to have one kept in `DOOROPENER_SECRET_KEY_FILE` | |
@@ -281,8 +321,10 @@ And as environment variables (`docker-compose.yml` sets the paths for you):
 |---|---|
 | `TZ` | The door's time zone (default `UTC`) |
 | `DOOROPENER_PORT` | The port, inside the container and on the host |
+| `PUID`, `PGID` | The user and group the container runs as (default 1000) |
 | `FLASK_SECRET_KEY` | A login-signing key, instead of a kept one |
-| `DOOROPENER_OPTIONS_PATH`, `USERS_STORE_PATH`, `DOOROPENER_LOG_DIR`, `DOOROPENER_SECRET_KEY_FILE` | Where the files of `./data` are |
+| `DOOROPENER_ADMIN_PASSWORD`, `DOOROPENER_HA_TOKEN` (and `_FILE`) | Secrets, instead of `options.json` (see [above](#keeping-secrets-out-of-optionsjson)) |
+| `DOOROPENER_OPTIONS_PATH`, `USERS_STORE_PATH`, `DOOROPENER_LOG_DIR`, `DOOROPENER_SECRET_KEY_FILE`, `DOOROPENER_PIN_KEY_FILE` | Where the files of `./data` are |
 | `DOOROPENER_SSL_DIR` | Where certificate names without a folder are looked up (default `/ssl`) |
 | `REQUESTS_CA_BUNDLE` | A CA bundle for Home Assistant's certificate, instead of `ha_cert_pem` |
 
@@ -309,9 +351,11 @@ looked up in `/ssl`; a full path is used as given.
 - **In the app**, turn on **HTTPS**. With the Let's Encrypt app (or the DuckDNS
   app, if you have no domain of your own), that is all: it writes
   `fullchain.pem` and `privkey.pem` to `/ssl`, which are the defaults.
-- **Standalone**, put the two files in `./ssl` and uncomment the `./ssl:/ssl:ro`
-  line in `docker-compose.yml`. Or mount your certbot folder and give full
-  paths:
+- **Standalone**, copy the two files to `./ssl`, owned by your user (the
+  container is not root, and certbot's key is readable by root only), and
+  uncomment the `./ssl:/ssl:ro` line in `docker-compose.yml`. A certbot deploy
+  hook can copy them on every renewal. Or mount your certbot folder, if your
+  user can read it, and give full paths:
 
   ```yaml
       volumes:
@@ -471,7 +515,10 @@ mode sends neither events nor alerts.
 | **Alerts, not lockouts** | `max_global_attempts_per_hour` wrong PINs within an hour raise a Home Assistant notification. A lockout for everyone would hand an attacker a way to keep you out |
 | **No PIN oracle** | A disabled PIN, one outside its window, or one for another door is answered and counted like any wrong PIN. Only the owner's own phone, holding a signed cookie that a new PIN invalidates, is told why |
 | **One-time door choice** | The tiles' pass is kept on the server: it works once, from the browser that entered the PIN, for 30 seconds |
-| **Hashed PINs** | `users.json` holds scrypt hashes, never PINs. Plain-text stores from before 2.8 are converted on load |
+| **Hashed PINs** | `users.json` holds scrypt hashes, never PINs, keyed with the PIN key: a copy of `users.json` alone cannot be searched for PINs (scrypt alone would give a 4-digit PIN away in minutes). Older stores are converted on load, without any PIN changing |
+| **Missing PIN key** | DoorOpener refuses to use `users.json` without its PIN key, or with another one, rather than make a new key and void every PIN |
+| **Admin password** | At least 12 characters, or stored as a scrypt hash; standalone it can come from a Docker secret instead of `options.json` |
+| **Private files** | `users.json`, `pin_key`, `secret_key` and the audit log are readable by their owner only; the standalone container runs as your user, never root |
 | **Admin inside Home Assistant** | In the app, the admin panel is reached through ingress, behind the Home Assistant login. Without `admin_password` it is not on the keypad port at all |
 | **Admin session expiry** | Checked on the server: 12 hours, or 30 days with "remember me", which bounds a stolen cookie |
 | **Startup checks** | DoorOpener refuses to start with an empty or default admin password, a guessable secret key, `ssl` on without a usable certificate, or doors that cannot work |
@@ -481,6 +528,15 @@ mode sends neither events nor alerts.
 
 ## Upgrading
 
+- **3.1**
+  - **The PIN key.** On the first start DoorOpener creates `pin_key` next to
+    `users.json` and keys the stored PINs with it. No PIN changes. From then on,
+    `users.json` needs `pin_key`: back them up together.
+  - **The admin password** must be at least 12 characters (or a hash). A
+    shorter one stops DoorOpener from starting, and the log says so.
+  - **Standalone:** the container runs as your user (`PUID`/`PGID`, default
+    1000), no longer root. Files that root made in `./data` before need to be
+    given back to you once: `sudo chown -R $(id -u):$(id -g) data`.
 - **3.0**
   - **The door is now a list of doors.**
     - The app: Home Assistant does not carry the old door entity over, so add
@@ -557,7 +613,7 @@ administrators get in. Requests that change something carry an `X-CSRF-Token`.
 | `dooropener/passes.py` | The 30-second pass between a PIN for several doors and the tile picked |
 | `dooropener/phones.py` | The signed cookie that recognises a user's own phone |
 | `dooropener/security.py` | Blocks with backoff, the brute-force alarm, client identity, security headers, trusted proxies |
-| `dooropener/pins.py` | PIN rules, hashing, constant-time comparison, the generator |
+| `dooropener/pins.py` | PIN rules, hashing and the PIN key, admin password hashes (`python pins.py hash-password`), the generator |
 | `dooropener/audit.py` | The circular audit log |
 | `dooropener/ha_client.py` | Home Assistant calls: opening doors, battery levels, events, logbook, alerts; skipped without Home Assistant |
 | `dooropener/ingress.py` | The admin panel inside Home Assistant (the app only) |

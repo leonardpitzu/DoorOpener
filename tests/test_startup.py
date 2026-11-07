@@ -33,6 +33,48 @@ def test_a_real_password_starts(tmp_path):
     assert _import(tmp_path).returncode == 0
 
 
+@pytest.mark.parametrize("password", ["elevenchars", "short-pw"])
+def test_refuses_to_start_with_a_short_admin_password(tmp_path, password):
+    result = _import(tmp_path, admin_password=password)
+    assert result.returncode != 0 and "shorter than 12" in result.stderr
+
+
+def test_an_admin_password_may_be_given_as_a_hash(tmp_path):
+    import pins
+    stored = pins.hash_password("a-long-admin-password")
+    code = "import config, pins; print(config.public_admin, pins.check_password('a-long-admin-password', config.admin_password))"
+    result = _import(tmp_path, code, admin_password=stored)
+    assert result.stdout.split() == ["True", "True"], result.stderr
+
+
+def test_secrets_may_come_from_the_environment_or_files(tmp_path):
+    secret = tmp_path / "ha_token"
+    secret.write_text("token-from-a-docker-secret\n")
+    code = "import config; print(config.admin_password, config.ha_token)"
+    result = _import(tmp_path, code, env={"DOOROPENER_ADMIN_PASSWORD": "from-the-environment",
+                                          "DOOROPENER_HA_TOKEN_FILE": str(secret)},
+                     admin_password="ignored-when-the-env-has-one", ha_token="ignored-too")
+    assert result.stdout.split() == ["from-the-environment", "token-from-a-docker-secret"], result.stderr
+    password_file = tmp_path / "admin_password"
+    password_file.write_text("a-password-from-a-file\n")
+    result = _import(tmp_path, "import config; print(config.admin_password)", admin_password="",
+                     env={"DOOROPENER_ADMIN_PASSWORD_FILE": str(password_file)})
+    assert result.stdout.strip() == "a-password-from-a-file", result.stderr
+
+
+def test_a_secret_file_that_cannot_be_read_refuses_to_start(tmp_path):
+    result = _import(tmp_path, env={"DOOROPENER_ADMIN_PASSWORD_FILE": str(tmp_path / "missing")})
+    assert result.returncode != 0 and "DOOROPENER_ADMIN_PASSWORD_FILE" in result.stderr
+
+
+def test_the_server_needs_no_home_folder():
+    # The standalone container runs as an unprivileged user without one.
+    with open(os.path.join(APP_DIR, "gunicorn.conf.py"), encoding="utf-8") as f:
+        assert "\ncontrol_socket_disable = True\n" in f.read()
+    with open(os.path.join(APP_DIR, "run.sh"), encoding="utf-8") as f:
+        assert 'DOOROPENER_PIN_KEY_FILE="/data/pin_key"' in f.read()
+
+
 @pytest.mark.parametrize("password", ["", "   ", "admin", "Password", "change_me_please"])
 def test_refuses_to_start_with_a_guessable_admin_password(tmp_path, password):
     result = _import(tmp_path, admin_password=password)
@@ -243,7 +285,7 @@ def test_every_option_has_a_name_and_a_description():
 def test_settings_are_read_from_their_section(tmp_path):
     code = "import config; print(config.test_mode, config.MAX_ATTEMPTS, config.trusted_proxies, config.public_admin)"
     result = _import(tmp_path, code,
-                     settings={"test_mode": True, "max_attempts": 7, "trusted_proxies": 1, "admin_password": "a-section-pw"})
+                     settings={"test_mode": True, "max_attempts": 7, "trusted_proxies": 1, "admin_password": "a-section-password"})
     assert result.stdout.split() == ["True", "7", "1", "True"], result.stderr
 
 

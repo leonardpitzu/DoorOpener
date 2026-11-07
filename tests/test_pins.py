@@ -76,3 +76,45 @@ def test_the_hash_costs_what_its_scheme_name_says(monkeypatch):
     cost = pins._SCRYPT
     assert cost["n"] == 2**14
     assert PIN_HASH_SCHEME == f"scrypt-{cost['n']}-{cost['r']}-{cost['p']}"
+
+
+# ---------------------------------------------------------------------------
+# The PIN key, and the admin password as a hash
+# ---------------------------------------------------------------------------
+def test_a_keyed_hash_needs_the_key():
+    stored = hash_pin("1234", b"salt")
+    keyed = pins.key_pin_hash(stored, b"k" * 32)
+    assert keyed != stored and len(keyed) == 64
+    assert keyed == pins.key_pin_hash(stored, b"k" * 32)
+    assert keyed != pins.key_pin_hash(stored, b"j" * 32)
+    assert pins.pin_key_id(b"k" * 32) != pins.pin_key_id(b"j" * 32)
+
+
+def test_an_admin_password_hash_checks_the_password():
+    stored = pins.hash_password("correct horse battery")
+    assert pins.is_password_hash(stored)
+    assert pins.check_password("correct horse battery", stored)
+    assert not pins.check_password("correct horse batterz", stored)
+    assert stored != pins.hash_password("correct horse battery")  # salted
+
+
+def test_a_plain_admin_password_is_still_compared():
+    assert pins.check_password("a-plain-password", "a-plain-password")
+    assert not pins.check_password("a-plain-passwore", "a-plain-password")
+
+
+@pytest.mark.parametrize("stored", ["scrypt:", "scrypt:16384:8:1:zz:00", "scrypt:16384:8:1:00", "scrypt:x:8:1:00:00",
+                                    "scrypt:1048576:64:1:00:00"])
+def test_a_broken_hash_lets_nobody_in(stored):
+    assert not pins.check_password("anything", stored)
+
+
+def test_the_hash_password_command(monkeypatch, capsys):
+    import getpass
+    answers = iter(["correct horse battery", "correct horse battery"])
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
+    assert pins._hash_password_command() == 0
+    printed = capsys.readouterr().out.strip()
+    assert pins.check_password("correct horse battery", printed)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": "short")
+    assert pins._hash_password_command() == 1

@@ -1,5 +1,5 @@
 name: DoorOpener
-version: "3.0.0"
+version: "3.1.0"
 slug: dooropener
 description: >-
   A PIN keypad that opens your doors through Home Assistant: a door, a barrier,

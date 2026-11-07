@@ -32,13 +32,13 @@ class AuditLog:
         self.max_bytes = max_bytes
         self.retention = retention
         self.lock = threading.RLock()
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
         self._size = 0
         self._pruned_at = 0.0
         with self.lock:
             self._fold_old_rotations()
-            with open(path, "a", encoding="utf-8"):
-                pass  # the log exists from the start, as an empty file
+            # The log exists from the start, private: it names people and their addresses.
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
             self.prune()
 
     def record(self, ip: str, session_id: str | None, user: str, status: str, details: str) -> None:
@@ -113,11 +113,11 @@ class AuditLog:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.writelines(lines)
-            # mkstemp makes the file private; keep the log as readable as it was.
+            # Keep the log's permissions as they were (private, unless someone chose otherwise).
             try:
                 mode = stat.S_IMODE(os.stat(self.path).st_mode)
             except FileNotFoundError:
-                mode = 0o644
+                mode = 0o600
             os.chmod(tmp, mode)
             os.replace(tmp, self.path)
         except BaseException:

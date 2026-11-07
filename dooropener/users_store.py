@@ -10,9 +10,13 @@
       }
     }
 
-PINs are stored hashed (see ``pins``) and can never be read back. A store written
-before 2.8.0 keeps them in plain text under "pin"; it is converted the first time
-it is loaded, as are the access rules of a store from before 3.0.
+PINs are stored hashed (see ``pins``) and can never be read back. The hashes are
+keyed with the PIN key, a file kept apart from users.json (``key_file``): without
+it, users.json cannot be searched for PINs. A store written before 2.8.0 keeps
+PINs in plain text under "pin", and one from before 3.1 unkeyed hashes; both are
+converted the first time they are loaded, as are the access rules of a store
+from before 3.0. Losing the PIN key loses every PIN, so it is backed up with
+users.json; a store that needs it and cannot find it refuses to load.
 
 ``doors`` are the ids of the doors a user may open. ``access`` holds the rules of
 ``access`` (``null``: always); ``visits`` and ``visit_started_at`` count a guest's
@@ -34,7 +38,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import access
-from pins import PIN_HASH_SCHEME, hash_pin, is_valid_pin
+from pins import KEYED_SCHEME, MIN_PIN_KEY_LENGTH, PIN_HASH_SCHEME, hash_pin, is_valid_pin, key_pin_hash, pin_key_id
 
 logger = logging.getLogger("dooropener")
 
@@ -90,7 +94,7 @@ class UsersStore:
     """The users file, with a cached ``{pin hash: username}`` index for lookups."""
 
     __slots__ = (
-        "path", "data", "_loaded", "_index",
+        "path", "key_file", "data", "_loaded", "_index", "_key",
         "_touch_dirty", "_last_touch_flush", "_lock",
     )
 
@@ -98,11 +102,15 @@ class UsersStore:
     # once per this interval (plus an atexit flush) instead of fsync-per-open.
     _TOUCH_FLUSH_INTERVAL = 30.0  # seconds
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, key_file: str | None = None):
         self.path = path
+        # The PIN key: read from here, or created here the first time. None keeps
+        # the hashes unkeyed (tests, and stores that are only inspected).
+        self.key_file = key_file
         self.data: dict[str, Any] = {"users": {}}
         self._loaded = False
         self._index: dict[str, str] | None = None  # pin hash -> username
+        self._key: bytes | None = None
         self._touch_dirty = False  # unpersisted usage counts in self.data
         self._last_touch_flush = 0.0  # monotonic ts of last touch flush
         # Reentrant: gunicorn runs threaded and mutators nest
@@ -119,6 +127,7 @@ class UsersStore:
             dir_name = os.path.dirname(self.path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
+            self._key = self._pin_key(None)
             self._set_loaded({"users": {}})
             return
         try:
@@ -129,6 +138,7 @@ class UsersStore:
         if content.strip() == "":
             # A freshly-created/empty file (e.g. touch'd but never written) has
             # no data to lose, so it's safe to treat like a missing file.
+            self._key = self._pin_key(None)
             self._set_loaded({"users": {}})
             return
         try:
@@ -142,10 +152,58 @@ class UsersStore:
         if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
             raise UsersStoreError(f"Users store at {self.path} has an unexpected format")
         hashing = data.get("pin_hashing")
-        if hashing is not None and (not isinstance(hashing, dict) or hashing.get("scheme") != PIN_HASH_SCHEME
+        if hashing is not None and (not isinstance(hashing, dict)
+                                    or hashing.get("scheme") not in (PIN_HASH_SCHEME, KEYED_SCHEME)
                                     or not isinstance(hashing.get("salt"), str)):
             raise UsersStoreError(f"Users store at {self.path} uses an unknown PIN hashing scheme")
+        self._key = self._pin_key(hashing)
         self._set_loaded(data)
+
+    def _pin_key(self, hashing: dict | None) -> bytes | None:
+        """The PIN key for a store hashed as *hashing* says. Raises UsersStoreError
+        rather than guess: a new key for keyed PINs would silently void them all."""
+        keyed = bool(hashing) and hashing.get("scheme") == KEYED_SCHEME
+        if not self.key_file:
+            if keyed:
+                raise UsersStoreError(f"The PINs in {self.path} need a PIN key, and none is configured")
+            return None
+        try:
+            with open(self.key_file, encoding="utf-8") as f:
+                text = f.read().strip()
+        except FileNotFoundError:
+            if keyed:
+                raise UsersStoreError(
+                    f"The PIN key {self.key_file} is missing, and the PINs in {self.path} cannot be checked "
+                    "without it. Restore it from the backup that holds users.json; nothing was changed."
+                ) from None
+            text = self._create_pin_key()
+        except OSError as e:
+            raise UsersStoreError(f"Cannot read the PIN key {self.key_file}: {e}") from e
+        if len(text) < MIN_PIN_KEY_LENGTH:
+            raise UsersStoreError(f"The PIN key in {self.key_file} is shorter than {MIN_PIN_KEY_LENGTH} characters")
+        key = text.encode()
+        if keyed and hashing.get("key_id") != pin_key_id(key):
+            raise UsersStoreError(
+                f"The PIN key {self.key_file} is not the one the PINs in {self.path} were made with; "
+                "nothing was changed."
+            )
+        return key
+
+    def _create_pin_key(self) -> str:
+        key_dir = os.path.dirname(self.key_file)
+        if key_dir:
+            os.makedirs(key_dir, exist_ok=True)
+        text = secrets.token_hex(32)
+        try:
+            fd = os.open(self.key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError as e:
+            raise UsersStoreError(f"Cannot create the PIN key {self.key_file}: {e}") from e
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        logger.info("Created the PIN key %s: back it up with users.json", self.key_file)
+        return text
 
     def _set_loaded(self, data: dict[str, Any]) -> None:
         """Commit *data* as the loaded state, converting plain-text PINs.
@@ -156,15 +214,28 @@ class UsersStore:
         self.data = data
         self._loaded = True
         self._index = None
+        keyed = self._key_stored_hashes()
         hashed = self._hash_plain_pins()
         upgraded = self._upgrade_users()
-        if hashed or upgraded:
+        if keyed or hashed or upgraded:
             try:
                 self._save_atomic()
                 logger.info("Converted the users store to this version's format")
             except (OSError, UsersStoreError) as e:
                 # The converted store works from memory; the next write saves it.
                 logger.warning("Could not save the converted users store: %s", e)
+
+    def _key_stored_hashes(self) -> bool:
+        """Key the unkeyed hashes of a store from before 3.1 with the PIN key. True if it did."""
+        hashing = self.data.get("pin_hashing")
+        if self._key is None or not hashing or hashing.get("scheme") != PIN_HASH_SCHEME:
+            return False
+        for meta in self.data["users"].values():
+            if isinstance(meta, dict) and isinstance(meta.get("pin_hash"), str):
+                meta["pin_hash"] = key_pin_hash(meta["pin_hash"], self._key)
+        hashing["scheme"], hashing["key_id"] = KEYED_SCHEME, pin_key_id(self._key)
+        logger.info("Keyed the stored PIN hashes with the PIN key")
+        return True
 
     def _upgrade_users(self) -> bool:
         """Bring users written by an older version up to date. True if any changed."""
@@ -267,8 +338,12 @@ class UsersStore:
             hashing = self.data.get("pin_hashing")
             if not hashing:
                 hashing = self.data["pin_hashing"] = {"scheme": PIN_HASH_SCHEME, "salt": secrets.token_hex(16)}
+                if self._key is not None:
+                    hashing["scheme"], hashing["key_id"] = KEYED_SCHEME, pin_key_id(self._key)
             salt = bytes.fromhex(hashing["salt"])
-        return hash_pin(pin, salt)  # slow on purpose, so outside the lock
+            key = self._key if hashing["scheme"] == KEYED_SCHEME else None
+        digest = hash_pin(pin, salt)  # slow on purpose, so outside the lock
+        return key_pin_hash(digest, key) if key is not None else digest
 
     def _owner(self, digest: str) -> str | None:
         with self._lock:

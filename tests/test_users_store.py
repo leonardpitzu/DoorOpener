@@ -553,3 +553,77 @@ def test_a_new_pin_forgets_the_phones_that_knew_the_old_one(users_store):
     assert users_store.profile("alice")["phone_key"] == key
     users_store.update_user("alice", pin="4321")
     assert users_store.profile("alice")["phone_key"] not in ("", key)
+
+
+# ---------------------------------------------------------------------------
+# The PIN key: kept apart from users.json, mixed into every hash
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def key_file(tmp_path):
+    return str(tmp_path / "secrets" / "pin_key")
+
+
+def test_a_new_store_creates_its_pin_key_and_keys_its_pins(temp_users_file, key_file):
+    from pins import KEYED_SCHEME, hash_pin
+    store = UsersStore(temp_users_file, key_file=key_file)
+    store.create_user("alice", "1234")
+    assert os.stat(key_file).st_mode & 0o777 == 0o600
+    saved = json.load(open(temp_users_file))
+    assert saved["pin_hashing"]["scheme"] == KEYED_SCHEME and saved["pin_hashing"]["key_id"]
+    # users.json alone does not say whose PIN is 1234: the hash needs the key.
+    salt = bytes.fromhex(saved["pin_hashing"]["salt"])
+    assert saved["users"]["alice"]["pin_hash"] != hash_pin("1234", salt)
+    assert _who(UsersStore(temp_users_file, key_file=key_file), "1234") == "alice"
+
+
+def test_a_store_from_before_3_1_is_keyed_without_any_pin_changing(temp_users_file, key_file):
+    old = UsersStore(temp_users_file)  # 3.0: unkeyed hashes
+    old.create_user("alice", "1234")
+    old.create_user("bob", "567890")
+    store = UsersStore(temp_users_file, key_file=key_file)
+    assert _who(store, "1234") == "alice" and _who(store, "567890") == "bob"
+    assert _who(store, "0000") is None
+    saved = json.load(open(temp_users_file))
+    assert saved["pin_hashing"]["scheme"].endswith("+hmac-sha256")
+    # Converted once: a later start with the same key keeps working.
+    assert _who(UsersStore(temp_users_file, key_file=key_file), "567890") == "bob"
+
+
+def test_a_missing_pin_key_stops_the_store_rather_than_void_the_pins(temp_users_file, key_file):
+    UsersStore(temp_users_file, key_file=key_file).create_user("alice", "1234")
+    before = open(temp_users_file).read()
+    os.remove(key_file)
+    with pytest.raises(UsersStoreError, match="PIN key .* is missing"):
+        UsersStore(temp_users_file, key_file=key_file).authorize("1234", NOW)
+    assert not os.path.exists(key_file)  # no new key made up
+    assert open(temp_users_file).read() == before
+    with pytest.raises(UsersStoreError, match="need a PIN key"):
+        UsersStore(temp_users_file).list_users()
+
+
+def test_a_wrong_pin_key_is_noticed(temp_users_file, key_file):
+    UsersStore(temp_users_file, key_file=key_file).create_user("alice", "1234")
+    with open(key_file, "w") as f:
+        f.write("another-key-" + "x" * 40)
+    with pytest.raises(UsersStoreError, match="not the one"):
+        UsersStore(temp_users_file, key_file=key_file).authorize("1234", NOW)
+
+
+def test_a_pin_key_may_be_any_long_secret(temp_users_file, tmp_path):
+    secret = tmp_path / "docker-secret"
+    secret.write_text("  a passphrase from a Docker secret, long enough  \n")
+    store = UsersStore(temp_users_file, key_file=str(secret))
+    store.create_user("alice", "1234")
+    assert _who(UsersStore(temp_users_file, key_file=str(secret)), "1234") == "alice"
+    secret.write_text("too short")
+    with pytest.raises(UsersStoreError, match="shorter than 32"):
+        UsersStore(temp_users_file, key_file=str(secret)).list_users()
+
+
+def test_plain_pins_from_before_2_8_are_hashed_with_the_key(temp_users_file, key_file):
+    with open(temp_users_file, "w") as f:
+        json.dump({"users": {"alice": {"pin": "1234", "active": True}}}, f)
+    store = UsersStore(temp_users_file, key_file=key_file)
+    assert _who(store, "1234") == "alice"
+    saved = json.load(open(temp_users_file))
+    assert saved["pin_hashing"]["scheme"].endswith("+hmac-sha256") and "pin" not in saved["users"]["alice"]

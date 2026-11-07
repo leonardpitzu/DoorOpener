@@ -93,7 +93,7 @@ def test_admin_actions_through_ingress_name_the_home_assistant_user(ha, app_modu
 
 
 def test_the_password_login_does_not_exist_through_ingress(ha):
-    r = ha.post("/admin/auth", environ_base=SUPERVISOR, headers=ADMIN, json={"password": "testpass"})
+    r = ha.post("/admin/auth", environ_base=SUPERVISOR, headers=ADMIN, json={"password": "testpass-0123"})
     assert r.status_code == 404
 
 
