@@ -10,15 +10,13 @@ alert.
 ![Version](https://img.shields.io/badge/version-3.0.0-blue?style=flat-square)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
 
-<p>
-  <img src="docs/keypad.webp" width="240" alt="The keypad">
-  <img src="docs/keypad-tiles.webp" width="240" alt="A PIN for two doors: pick one">
-  <img src="docs/keypad-refused.webp" width="240" alt="Its owner's phone is told why a PIN may not open the barrier">
-</p>
-<p>
-  <img src="docs/admin-users.webp" width="49%" alt="Users with their doors, schedules and guest dates">
-  <img src="docs/admin-guest.webp" width="49%" alt="Adding a guest for three days">
-</p>
+![The keypad on a phone: entering a PIN; a PIN for two doors offering Barrier and Door; and on the barrier's shortcut page, the owner's phone told "This PIN can't open Barrier."](docs/keypad.webp)
+
+*The keypad: a PIN for two doors offers both; on the barrier's shortcut link, the owner of a door-only PIN is told why it doesn't open.*
+
+![The admin panel: users with their doors, schedules and guest dates; and adding a guest until the end of day 3](docs/admin.webp)
+
+*The admin panel: who may open what, and when; adding a friend as a guest for three days.*
 
 ## Contents
 
