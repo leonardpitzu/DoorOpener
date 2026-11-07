@@ -1,7 +1,7 @@
 {
   "name": "DoorOpener",
   "short_name": "DoorOpener",
-  "description": "A PIN keypad that opens your door through Home Assistant.",
+  "description": "A PIN keypad that opens your doors through Home Assistant.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

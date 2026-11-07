@@ -106,7 +106,7 @@ class HAClient:
     def check_connection(self) -> None:
         """Log once whether Home Assistant answers, so a wrong URL or token shows up at startup."""
         if not self.available:
-            logger.warning("No Home Assistant configured: the keypad works, but cannot open the door.")
+            logger.warning("No Home Assistant configured: the keypad works, but cannot open any door.")
             return
         try:
             resp = self.session.get(f"{config.ha_url}/api/", timeout=10)
