@@ -1,5 +1,5 @@
 name: DoorOpener
-version: "2.6.0"
+version: "2.7.0"
 slug: dooropener
 description: >-
   A secure web interface for controlling smart door openers via Home Assistant.
@@ -15,8 +15,9 @@ boot: auto
 ingress: false
 panel_icon: mdi:door
 panel_title: DoorOpener
-webui: "http://[HOST]:[PORT:6532]"
-watchdog: "http://[HOST]:[PORT:6532]/health"
+# [PROTO:ssl] is https while the ssl option is on, http otherwise.
+webui: "[PROTO:ssl]://[HOST]:[PORT:6532]"
+watchdog: "[PROTO:ssl]://[HOST]:[PORT:6532]/health"
 homeassistant_api: true
 ports:
   6532/tcp: 6532
@@ -24,12 +25,17 @@ ports_description:
   6532/tcp: DoorOpener web interface
 map:
   - config:rw
+  # Certificates shared by Home Assistant apps, for the ssl option.
+  - ssl:ro
 options:
   ha_url: "http://supervisor/core"
   ha_token: ""
   entity_id: "switch.dooropener"
   battery_entity: ""
   port: 6532
+  ssl: false
+  certfile: fullchain.pem
+  keyfile: privkey.pem
   test_mode: false
   admin_password: ""
   max_attempts: 5
@@ -46,6 +52,9 @@ schema:
   entity_id: str
   battery_entity: str?
   port: port
+  ssl: bool
+  certfile: str
+  keyfile: str
   test_mode: bool
   admin_password: password
   max_attempts: "int(1,100)"

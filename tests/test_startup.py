@@ -9,6 +9,7 @@ import subprocess  # nosec B404 - runs this repo's own code with fixed arguments
 import sys
 
 import pytest
+import trustme
 
 import config
 
@@ -60,6 +61,55 @@ def test_x_forwarded_for_is_trusted_only_when_configured(tmp_path, proxies, wrap
             "print(isinstance(app.app.wsgi_app, ProxyFix))")
     result = _import(tmp_path, code, trusted_proxies=proxies)
     assert result.stdout.strip() == str(wrapped), result.stderr
+
+
+def _issue(directory, certfile="fullchain.pem", keyfile="privkey.pem", key_from=None):
+    """A certificate and key in directory; key_from takes the key from another certificate."""
+    leaf = trustme.CA().issue_cert("door.test")
+    leaf.cert_chain_pems[0].write_to_path(str(directory / certfile))
+    (key_from or leaf).private_key_pem.write_to_path(str(directory / keyfile))
+
+
+def test_https_is_off_by_default(tmp_path):
+    result = _import(tmp_path, "import config; print(config.ssl_enabled, config.session_cookie_secure)")
+    assert result.stdout.split() == ["False", "False"], result.stderr
+
+
+def test_https_looks_in_the_shared_ssl_folder_and_secures_the_cookie(tmp_path):
+    _issue(tmp_path)
+    code = "import config; print(config.ssl_certfile, config.ssl_keyfile, config.session_cookie_secure)"
+    result = _import(tmp_path, code, env={"DOOROPENER_SSL_DIR": str(tmp_path)}, ssl=True)
+    assert result.stdout.split() == [str(tmp_path / "fullchain.pem"), str(tmp_path / "privkey.pem"), "True"], \
+        result.stderr
+
+
+def test_https_takes_full_paths_as_given(tmp_path):
+    live = tmp_path / "live"
+    live.mkdir()
+    _issue(live, "cert.pem", "key.pem")
+    result = _import(tmp_path, "import config; print(config.ssl_certfile, config.ssl_keyfile)",
+                     env={"DOOROPENER_SSL_DIR": "/nonexistent"},
+                     ssl=True, certfile=str(live / "cert.pem"), keyfile=str(live / "key.pem"))
+    assert result.stdout.split() == [str(live / "cert.pem"), str(live / "key.pem")], result.stderr
+
+
+@pytest.mark.parametrize("certificate", ["missing", "with someone else's key"])
+def test_https_refuses_to_start_without_a_usable_certificate(tmp_path, certificate):
+    if certificate != "missing":
+        _issue(tmp_path, key_from=trustme.CA().issue_cert("other.test"))
+    result = _import(tmp_path, env={"DOOROPENER_SSL_DIR": str(tmp_path)}, ssl=True)
+    assert result.returncode != 0
+    assert "ssl is on" in result.stderr
+
+
+def test_the_app_health_check_and_web_ui_follow_the_ssl_option():
+    with open(os.path.join(APP_DIR, "config.yaml"), encoding="utf-8") as f:
+        manifest = f.read()
+    # The Supervisor resolves [PROTO:ssl] from the option named ssl.
+    assert 'webui: "[PROTO:ssl]://' in manifest
+    assert 'watchdog: "[PROTO:ssl]://' in manifest
+    assert "\n  ssl: false\n" in manifest and "\n  ssl: bool\n" in manifest
+    assert "\n  - ssl:ro\n" in manifest
 
 
 @pytest.mark.parametrize("opts, env, expected", [
