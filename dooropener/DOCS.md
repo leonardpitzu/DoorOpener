@@ -41,7 +41,7 @@ The keypad shows the doors in this order; drag entries to reorder them.
 | **Certificate file (file name in /ssl)** | Default `fullchain.pem` |
 | **Private key file (file name in /ssl)** | Default `privkey.pem` |
 | **Reverse proxies in front** | `0` when browsers connect directly, `1` behind a proxy or tunnel (see [Choose a setup](#choose-a-setup)) |
-| **Admin password on the keypad port (optional)** | Also offer the admin panel on port 6532, behind this password (see below) |
+| **Admin password on the keypad port (optional)** | Also offer the admin panel on port 6532, behind this password: at least 12 characters (see below) |
 | **Report to Home Assistant** | Openings and refusals of someone's own PIN as events and logbook entries (see [Home Assistant events](#home-assistant-events)). The brute-force alert is sent either way |
 | **Wrong PINs per device** | Wrong PINs from one IP address before it is blocked |
 | **Wrong PINs per browser** | Wrong PINs from one browser before it is blocked; also the wrong admin passwords allowed per IP address |
@@ -179,11 +179,18 @@ All app data is stored in `/data/` (persisted across restarts):
 
 - `options.json` - configuration (managed by HA)
 - `users.json` - users, with hashed PINs
+- `pin_key` - the key the PIN hashes are made with, created on the first
+  start. A copy of `users.json` without it cannot be searched for PINs; without
+  it, the PINs cannot be checked. Home Assistant's backups keep both
 - `secret_key` - the session signing key, generated on the first start
 - `logs/log.txt` - audit log: the last 180 days, at most 5 MB, the oldest
   entries making room for new ones
 
 ## Upgrading
+
+- **3.1**: the stored PINs are keyed with a new `pin_key`, created on the first
+  start; no PIN changes. An admin password on the keypad port must now be at
+  least 12 characters, or DoorOpener does not start.
 
 - **3.0**: one door became a list of **Doors**. Home Assistant does not carry
   the old door entity over, so add your door again on the configuration page

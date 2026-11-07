@@ -43,7 +43,9 @@ from passes import Passes
 from phones import COOKIE as PHONE_COOKIE
 from phones import MAX_AGE as PHONE_COOKIE_MAX_AGE
 from phones import KnownPhones
-from pins import DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, generate_pin, is_valid_pin, secure_equals
+from pins import (
+    DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, check_password, generate_pin, is_valid_pin, secure_equals,
+)
 from security import LocalProxyFix, RateLimiter, add_security_headers, client_identity
 from users_store import KEEP, InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
 
@@ -95,7 +97,10 @@ LOG_DIR = os.environ.get("DOOROPENER_LOG_DIR") or os.path.join(_HERE, "logs")
 
 rate_limiter = RateLimiter()
 ha_client = HAClient()
-users_store = UsersStore(USERS_STORE_PATH)
+users_store = UsersStore(
+    USERS_STORE_PATH,
+    key_file=config.pin_key_file or os.path.join(os.path.dirname(os.path.abspath(USERS_STORE_PATH)), "pin_key"),
+)
 audit_log = AuditLog(os.path.join(LOG_DIR, "log.txt"))
 passes = Passes()
 known_phones = KnownPhones(app.secret_key)
@@ -695,7 +700,7 @@ def admin_auth():
         return _blocked(blocked_until)
 
     body = _json_body()
-    if not secure_equals(str(body.get("password") or "").strip(), config.admin_password):
+    if not check_password(str(body.get("password") or "").strip(), config.admin_password):
         blocked_until = rate_limiter.admin_ip.fail(ip)
         _count_failure(ip, session_id)
         details = "Invalid admin password"

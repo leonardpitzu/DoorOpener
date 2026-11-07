@@ -57,8 +57,8 @@ configuration:
         name: Admin password on the keypad port (optional)
         description: >-
           Leave empty to keep the admin panel inside Home Assistant only (Open
-          Web UI, or Show in sidebar). Set one to also reach it from the
-          keypad's gear icon.
+          Web UI, or Show in sidebar). Set one, at least 12 characters, to also
+          reach it from the keypad's gear icon.
       report_to_ha:
         name: Report to Home Assistant
         description: >-

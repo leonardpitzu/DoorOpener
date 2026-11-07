@@ -19,6 +19,10 @@ COPY dooropener/static/ ./static/
 ARG BUILD_VERSION=0.0.0
 ENV APP_VERSION=${BUILD_VERSION}
 
+# Not root: the files in /data belong to whoever runs the container (compose
+# sets the user to yours, PUID:PGID), and a break-in gets no root inside it.
+USER 1000:1000
+
 EXPOSE 6532
 
 # Port, HTTPS and workers come from gunicorn.conf.py, which reads options.json.

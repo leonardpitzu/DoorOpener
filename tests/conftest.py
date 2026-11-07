@@ -23,7 +23,7 @@ TEST_OPTIONS = {
                "battery_entity": "sensor.test_door_battery"}],
     "port": 6532,
     "test_mode": True,
-    "admin_password": "testpass",
+    "admin_password": "testpass-0123",
     "max_attempts": 5,
     "block_time_minutes": 5,
     "max_global_attempts_per_hour": 50,

@@ -4,18 +4,26 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: dooropener
+    # Run as you, so the private files in ./data are yours to back up. Set PUID
+    # and PGID in .env if your user is not 1000 (see `id`).
+    user: "${PUID:-1000}:${PGID:-1000}"
     # Optional: copy .env.example to .env to set the time zone, port or session key.
     env_file:
       - path: .env
         required: false
     # Everything DoorOpener keeps lives in ./data, as /data does in the Home
-    # Assistant app: options.json (yours to write), users.json, logs/ and
-    # secret_key (created on the first start).
+    # Assistant app: options.json (yours to write), users.json, logs/,
+    # secret_key and pin_key (created on the first start).
     environment:
       DOOROPENER_OPTIONS_PATH: /data/options.json
       USERS_STORE_PATH: /data/users.json
       DOOROPENER_LOG_DIR: /data/logs
       DOOROPENER_SECRET_KEY_FILE: /data/secret_key
+      DOOROPENER_PIN_KEY_FILE: /data/pin_key
+      # Secrets out of options.json: uncomment, with the secrets block below.
+      # DOOROPENER_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      # DOOROPENER_HA_TOKEN_FILE: /run/secrets/ha_token
+    # secrets: [admin_password, ha_token]
     volumes:
       - ./data:/data
       # HTTPS: put fullchain.pem and privkey.pem in ./ssl, set "ssl": true in
@@ -31,3 +39,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+# Files holding one secret each, readable by the user above, e.g. ./secrets/ha_token.
+# secrets:
+#   admin_password:
+#     file: ./secrets/admin_password
+#   ha_token:
+#     file: ./secrets/ha_token
