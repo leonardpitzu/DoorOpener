@@ -70,6 +70,28 @@ def _issue(directory, certfile="fullchain.pem", keyfile="privkey.pem", key_from=
     (key_from or leaf).private_key_pem.write_to_path(str(directory / keyfile))
 
 
+def test_an_app_may_leave_the_admin_password_empty(tmp_path):
+    code = "import config; print(config.ha_app, config.public_admin)"
+    result = _import(tmp_path, code, env={"SUPERVISOR_TOKEN": "sup"}, admin_password="")
+    assert result.stdout.split() == ["True", "False"], result.stderr
+
+
+def test_an_app_still_refuses_a_default_admin_password(tmp_path):
+    result = _import(tmp_path, env={"SUPERVISOR_TOKEN": "sup"}, admin_password="admin")
+    assert result.returncode != 0 and "admin_password" in result.stderr
+
+
+def test_the_app_offers_its_admin_panel_through_ingress():
+    import ingress
+    with open(os.path.join(APP_DIR, "config.yaml"), encoding="utf-8") as f:
+        manifest = f.read()
+    assert "\ningress: true\n" in manifest
+    assert f"\ningress_port: {ingress.PORT}\n" in manifest
+    assert "\npanel_admin: true\n" in manifest
+    assert "\n  admin_password: password?\n" in manifest
+    assert "8099" not in manifest.split("ports:")[1].split("ports_description:")[0]  # never on the host
+
+
 def test_https_is_off_by_default(tmp_path):
     result = _import(tmp_path, "import config; print(config.ssl_enabled, config.session_cookie_secure)")
     assert result.stdout.split() == ["False", "False"], result.stderr

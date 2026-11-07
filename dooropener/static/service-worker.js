@@ -1,18 +1,12 @@
-/* DoorOpener Service Worker */
-// Bump the version to purge old caches. v3 also evicts admin and API responses
-// that earlier versions cached by mistake.
-const CACHE_NAME = 'dooropener-cache-v3';
-const ASSETS = [
-  '/',
-  '/static/background.jpg',
-  '/static/favicon.png',
-  '/static/gear.png',
-  '/static/manifest.webmanifest'
-];
+/* DoorOpener service worker: the keypad shell loads at once, even on a flaky network. */
+// The page registers this script as /service-worker.js?v=<version>, so each
+// release gets a cache of its own and the previous one is dropped on activation.
+const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev';
+const CACHE_NAME = 'dooropener-' + VERSION;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.add('/')).then(() => self.skipWaiting())
   );
 });
 
@@ -25,8 +19,10 @@ self.addEventListener('activate', (event) => {
 });
 
 function cacheCopy(req, res) {
-  const copy = res.clone();
-  caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+  if (res.ok) {
+    const copy = res.clone();
+    caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+  }
   return res;
 }
 
@@ -41,7 +37,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets: cache first.
+  // Static assets: cache first. Their URLs carry the version, so a release brings new ones.
   if (url.pathname.startsWith('/static/')) {
     event.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => cacheCopy(req, res))));
   }

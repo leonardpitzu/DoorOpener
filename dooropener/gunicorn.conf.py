@@ -12,8 +12,9 @@ import tls as _tls
 
 bind = f"0.0.0.0:{_config.server_port}"
 # One worker: the brute-force counters live in memory and must see every request.
+# Its threads serve requests side by side; tls bounds how long a client may hold one.
 workers = 1
-threads = 2
+threads = 8
 timeout = 60
 
 if _config.ssl_enabled:
@@ -24,3 +25,10 @@ if _config.ssl_enabled:
     def ssl_context(conf, default_ssl_context_factory):
         """Every connection gets the certificate as it is on disk at that moment."""
         return _certificate.context
+
+
+def post_worker_init(worker):
+    """In the worker, once the app is loaded: its background services."""
+    import app
+
+    app.start_background_services()

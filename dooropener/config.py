@@ -54,6 +54,11 @@ except FileNotFoundError as _e:
 # ---------------------------------------------------------------------------
 SUPERVISOR_URL = "http://supervisor/core"
 
+# Running as a Home Assistant app: the Supervisor hands every app a token. That
+# brings the Supervisor's API connection and the admin panel in Home Assistant's
+# sidebar; standalone, neither exists and nothing depends on them.
+ha_app: bool = bool(os.environ.get("SUPERVISOR_TOKEN"))
+
 
 def _ha_endpoint(opts: Mapping, env: Mapping[str, str]) -> tuple[str, str]:
     """The Home Assistant base URL and access token to use.
@@ -160,12 +165,17 @@ _PLACEHOLDER_SECRETS = {
 }
 MIN_SECRET_KEY_LENGTH = 16
 
+# The admin password guards the admin panel on DoorOpener's own port. A Home
+# Assistant app also has the panel in Home Assistant's sidebar, behind your Home
+# Assistant login, so there the password is optional: without one, the panel is
+# not offered on the public port at all.
 admin_password: str = (_opts.get("admin_password") or "").strip()
-if admin_password.lower() in _DEFAULT_PASSWORDS:
+if admin_password.lower() in _DEFAULT_PASSWORDS and (admin_password or not ha_app):
     raise RuntimeError(
         "Refusing to start: admin_password is empty or a well-known default, so anyone "
-        "could log in as admin. Set a real password in the add-on configuration."
+        "could log in as admin. Set a real password in the configuration."
     )
+public_admin: bool = bool(admin_password)
 
 secret_key: str | None = (
     os.environ.get("FLASK_SECRET_KEY") or (_opts.get("secret_key") or "").strip() or None

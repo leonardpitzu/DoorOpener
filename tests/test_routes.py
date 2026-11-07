@@ -8,16 +8,38 @@ def test_service_worker_endpoint(client):
         assert "javascript" in (r.mimetype or "")
 
 
-def test_service_worker_with_gzip_does_not_500(client):
-    """Regression: gzip must skip passthrough (send_file) responses.
+def test_static_text_files_are_gzipped(client):
+    """Files sent from disk (send_file) are compressed too, and come out intact.
 
-    A gzip-capable client (every browser) previously 500'd the SW because
-    after_request called get_data() on a direct-passthrough response.
+    Regression guard: reading a direct-passthrough body once 500'd every request
+    from a gzip-capable browser.
     """
-    r = client.get("/service-worker.js", headers={"Accept-Encoding": "gzip"})
-    assert r.status_code in (200, 404)
-    if r.status_code == 200:
-        assert r.headers.get("Content-Encoding") != "gzip"
+    import gzip
+    for path in ("/service-worker.js", "/static/keypad.js", "/static/admin.css"):
+        plain = client.get(path)
+        zipped = client.get(path, headers={"Accept-Encoding": "gzip"})
+        assert zipped.status_code == 200, path
+        assert zipped.headers["Content-Encoding"] == "gzip"
+        assert gzip.decompress(zipped.data) == plain.data
+
+
+def test_images_are_sent_as_they_are(client):
+    r = client.get("/static/background.webp", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and "Content-Encoding" not in r.headers
+
+
+def test_versioned_assets_are_cached_for_good(client):
+    assert "immutable" in client.get("/static/keypad.js?v=2.8.0").headers["Cache-Control"]
+    assert client.get("/static/keypad.js").headers["Cache-Control"] == "public, max-age=86400"
+    assert client.get("/service-worker.js").headers["Cache-Control"] == "no-cache"
+    assert "no-store" in client.get("/").headers["Cache-Control"]
+
+
+def test_pages_link_their_assets_by_version(client):
+    import app as app_module
+    page = client.get("/").get_data(as_text=True)
+    assert f"/static/keypad.js?v={app_module.APP_VERSION}" in page
+    assert f"/static/keypad.css?v={app_module.APP_VERSION}" in page
 
 
 def test_manifest_endpoint(client):
@@ -37,15 +59,13 @@ def test_csp_directives_on_index(client):
     assert "connect-src 'self';" in csp  # and nothing else: no third-party calls
 
 
-def test_csp_uses_nonce_for_scripts(client):
-    """CSP script-src should use nonce, style-src allows unsafe-inline for attribute styles."""
+def test_csp_allows_only_scripts_from_dooropener_itself(client):
+    """Scripts are static files now: no inline script at all, so no nonce either."""
     r = client.get("/")
     csp = r.headers.get("Content-Security-Policy", "")
-    assert "'nonce-" in csp
-    # script-src uses nonce, not unsafe-inline
     script_src = [p for p in csp.split(";") if "script-src" in p][0]
-    assert "'nonce-" in script_src
-    assert "'unsafe-inline'" not in script_src
+    assert script_src.strip() == "script-src 'self'"
+    assert "<script>" not in r.get_data(as_text=True)
     # style-src allows unsafe-inline (needed for inline style="" attributes in Safari)
     style_src = [p for p in csp.split(";") if "style-src" in p][0]
     assert "'unsafe-inline'" in style_src

@@ -132,10 +132,10 @@ def test_a_failed_notification_never_raises(app_module, caplog):
 def test_an_unreadable_user_store_is_a_503_and_changes_nothing(app_module, monkeypatch):
     from users_store import UsersStore, UsersStoreError
 
-    def unreadable(self, pin):
+    def unreadable(self, pin, now):
         raise UsersStoreError("Cannot parse users store")
 
-    monkeypatch.setattr(UsersStore, "lookup_pin", unreadable)
+    monkeypatch.setattr(UsersStore, "authorize", unreadable)
     r = _try(_fresh_client(app_module), "1357")
     assert r.status_code == 503
     assert r.get_json()["status"] == "error"
