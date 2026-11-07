@@ -1,11 +1,13 @@
 """Brute-force protection, client identity, and security headers."""
 
+import ipaddress
 import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from flask import request, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import (
     BLOCK_TIME,
@@ -154,6 +156,36 @@ def client_identity() -> tuple[str, str]:
     if not session_id:
         session_id = session["_session_id"] = secrets.token_hex(16)
     return request.remote_addr or "unknown", session_id
+
+
+class LocalProxyFix:
+    """Believe X-Forwarded-* only from a reverse proxy on the local network.
+
+    Behind a proxy, X-Forwarded-For names the visitor, but anyone can send the
+    header. It counts only when the connection itself comes from a private,
+    loopback or link-local address, where a proxy of yours runs (NGINX Proxy
+    Manager, a Cloudflare tunnel, Caddy, ...). A client on the internet that
+    reaches the port around the proxy keeps its own address, so the brute-force
+    limits cannot be dodged with a made-up one.
+    """
+
+    def __init__(self, app, hops: int):
+        self.app = app
+        self.proxied = ProxyFix(app, x_for=hops, x_proto=hops, x_host=hops)
+
+    def __call__(self, environ, start_response):
+        handler = self.proxied if _is_local(environ.get("REMOTE_ADDR")) else self.app
+        return handler(environ, start_response)
+
+
+def _is_local(address: str | None) -> bool:
+    try:
+        ip = ipaddress.ip_address(address or "")
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
 def add_security_headers(response, framable: bool = False):

@@ -78,8 +78,7 @@ def test_an_empty_secret_key_means_a_random_one(tmp_path):
 
 @pytest.mark.parametrize("proxies, wrapped", [(0, False), (1, True)])
 def test_x_forwarded_for_is_trusted_only_when_configured(tmp_path, proxies, wrapped):
-    code = ("import app; from werkzeug.middleware.proxy_fix import ProxyFix; "
-            "print(isinstance(app.app.wsgi_app, ProxyFix))")
+    code = "import app, security; print(isinstance(app.app.wsgi_app, security.LocalProxyFix))"
     result = _import(tmp_path, code, trusted_proxies=proxies)
     assert result.stdout.strip() == str(wrapped), result.stderr
 
@@ -143,13 +142,22 @@ def test_https_refuses_to_start_without_a_usable_certificate(tmp_path, certifica
     assert "ssl is on" in result.stderr
 
 
-def test_the_app_health_check_and_web_ui_follow_the_ssl_option():
-    with open(os.path.join(APP_DIR, "config.yaml"), encoding="utf-8") as f:
-        manifest = f.read()
-    # The Supervisor resolves [PROTO:ssl] from the option named ssl.
-    assert 'watchdog: "[PROTO:ssl]://' in manifest
-    assert "\n  ssl: false\n" in manifest and "\n  ssl: bool\n" in manifest
-    assert "\n  - ssl:ro\n" in manifest
+def test_the_health_check_works_with_or_without_https():
+    import ingress
+    manifest = _yaml("config.yaml")
+    # The Supervisor reads [PROTO:...] only from top-level options, and HTTPS sits
+    # in the settings section, so the check uses the always-plain ingress listener.
+    assert manifest["watchdog"] == f"http://[HOST]:[PORT:{ingress.PORT}]/health"
+    assert manifest["options"]["settings"]["ssl"] is False and manifest["schema"]["settings"]["ssl"] == "bool"
+    assert "ssl:ro" in manifest["map"]
+
+
+def test_the_supervisor_can_ask_the_ingress_listener_for_health():
+    from werkzeug.test import Client
+    import app as app_module
+    import ingress
+    r = Client(ingress.IngressApp(app_module.app)).get("/health", environ_base={"REMOTE_ADDR": ingress.SUPERVISOR_IP})
+    assert r.status_code == 200 and r.get_json()["status"] == "ok"
 
 
 @pytest.mark.parametrize("opts, env, expected", [
@@ -201,19 +209,36 @@ def _yaml(name):
         return yaml.safe_load(f)
 
 
+def test_the_page_shows_the_door_first_then_doorOpeners_own_settings():
+    schema = _yaml("config.yaml")["schema"]
+    assert list(schema) == ["entity_id", "battery_entity", "settings"]
+    assert list(schema["settings"])[:3] == ["ssl", "certfile", "keyfile"]
+
+
 def test_the_app_asks_only_for_what_an_app_needs():
     schema = _yaml("config.yaml")["schema"]
+    asked = set(schema) | set(schema["settings"])
     # The Supervisor connection, the container port and a kept key cover these.
-    assert not {"ha_url", "ha_token", "ha_cert_pem", "port", "secret_key", "session_cookie_secure"} & set(schema)
-    assert schema["admin_password"] == "password?"
+    assert not {"ha_url", "ha_token", "ha_cert_pem", "port", "secret_key", "session_cookie_secure"} & asked
+    assert schema["settings"]["admin_password"] == "password?"
 
 
 def test_every_option_has_a_name_and_a_description():
     manifest, words = _yaml("config.yaml"), _yaml("translations/en.yaml")
-    assert set(words["configuration"]) == set(manifest["schema"])
-    for key, text in words["configuration"].items():
+    texts = words["configuration"]
+    assert set(texts) == set(manifest["schema"])
+    assert set(texts["settings"]["fields"]) == set(manifest["schema"]["settings"])
+    for key, text in [*texts.items(), *texts["settings"]["fields"].items()]:
         assert text["name"] and len(text["description"]) > 20, key
     assert set(words["network"]) == set(manifest["ports"])
+    assert "(file name in /ssl)" in texts["settings"]["fields"]["certfile"]["name"]
+
+
+def test_settings_are_read_from_their_section(tmp_path):
+    code = "import config; print(config.test_mode, config.MAX_ATTEMPTS, config.trusted_proxies, config.public_admin)"
+    result = _import(tmp_path, code,
+                     settings={"test_mode": True, "max_attempts": 7, "trusted_proxies": 1, "admin_password": "a-section-pw"})
+    assert result.stdout.split() == ["True", "7", "1", "True"], result.stderr
 
 
 @pytest.mark.parametrize("option, good, bad", [

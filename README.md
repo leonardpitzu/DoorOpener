@@ -66,7 +66,7 @@ Or via Compose:
 docker compose up -d
 ```
 
-To serve HTTPS, see [HTTPS](#https).
+To serve HTTPS, see [Choose a setup](#choose-a-setup).
 
 Standalone, DoorOpener reaches Home Assistant with `ha_url` and a long-lived
 `ha_token`, and the admin panel is on its own port behind `admin_password`. With
@@ -77,7 +77,9 @@ only opening the door fails (and says why).
 
 ### `options.json`
 
-All application settings live in a single `options.json` file. Copy the example and edit:
+All application settings live in a single `options.json` file, laid out like the
+app's configuration page: the door first, then DoorOpener's own settings, then
+what only a standalone container needs. Copy the example and edit:
 
 ```bash
 cp options.json.example options.json
@@ -85,45 +87,60 @@ cp options.json.example options.json
 
 ```json
 {
-  "ha_url": "http://homeassistant.local:8123",
-  "ha_token": "your_long_lived_access_token_here",
   "entity_id": "switch.dooropener_zigbee",
   "battery_entity": "sensor.dooropener_zigbee_battery",
+  "settings": {
+    "ssl": false,
+    "certfile": "fullchain.pem",
+    "keyfile": "privkey.pem",
+    "trusted_proxies": 0,
+    "admin_password": "change_me_please",
+    "max_attempts": 5,
+    "session_max_attempts": 3,
+    "block_time_minutes": 5,
+    "max_global_attempts_per_hour": 50,
+    "test_mode": false
+  },
+  "ha_url": "http://homeassistant.local:8123",
+  "ha_token": "your_long_lived_access_token_here",
+  "ha_cert_pem": "",
   "port": 6532,
-  "ssl": false,
-  "certfile": "fullchain.pem",
-  "keyfile": "privkey.pem",
-  "test_mode": false,
-  "admin_password": "change_me_please",
-  "max_attempts": 5,
-  "block_time_minutes": 5,
-  "max_global_attempts_per_hour": 50,
-  "session_max_attempts": 3,
-  "secret_key": "",
-  "trusted_proxies": 0,
-  "ha_cert_pem": ""
+  "secret_key": ""
 }
 ```
+
+A flat `options.json` from before 2.10, with the settings at the top level,
+works the same.
+
+| Key | Description | Default |
+|---|---|---|
+| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | _(required)_ |
+| `battery_entity` | Battery sensor (`sensor.*`) shown on the keypad; empty for none | `""` |
+
+`settings`:
+
+| Key | Description | Default |
+|---|---|---|
+| `ssl` | Serve HTTPS with the certificate below (see [Choose a setup](#choose-a-setup)) | `false` |
+| `certfile` | Certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
+| `keyfile` | The certificate's private key: a file name in `/ssl`, or a full path | `privkey.pem` |
+| `trusted_proxies` | Reverse proxies in front; their `X-Forwarded-For` is believed only from your own network. `0` = clients connect directly | `0` |
+| `admin_password` | Password for the admin panel on DoorOpener's own port; startup fails while it is a well-known default, or empty outside an app | _(required standalone)_ |
+| `max_attempts` | Failed PIN attempts per IP before blocking | `5` |
+| `session_max_attempts` | Failed attempts per browser session before blocking | `3` |
+| `block_time_minutes` | First block's length; each further block doubles, up to 24 h | `5` |
+| `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert (never a lockout) | `50` |
+| `test_mode` | When `true`, simulates door actions without calling HA | `false` |
+
+Standalone only (an app has the Supervisor for these):
 
 | Key | Description | Default |
 |---|---|---|
 | `ha_url` | Home Assistant base URL (a trailing `/api` is ignored) | Supervisor API |
 | `ha_token` | Long-lived access token (HA -> Profile -> Security) | Supervisor token |
-| `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | _(required)_ |
-| `battery_entity` | Battery sensor entity for monitoring | auto-derived |
+| `ha_cert_pem` | Inline PEM certificate for a Home Assistant with a self-signed one (see below) | `""` |
 | `port` | Web server port (overridden by `DOOROPENER_PORT` env var) | `6532` |
-| `ssl` | Serve HTTPS with the certificate below (see [HTTPS](#https)) | `false` |
-| `certfile` | Certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
-| `keyfile` | The certificate's private key: a file name in `/ssl`, or a full path | `privkey.pem` |
-| `test_mode` | When `true`, simulates door actions without calling HA | `false` |
-| `admin_password` | Password for the admin panel on DoorOpener's own port; startup fails while it is a well-known default, or empty outside an app | _(required standalone)_ |
-| `max_attempts` | Failed PIN attempts per IP before blocking | `5` |
-| `block_time_minutes` | First block's length; each further block doubles, up to 24 h | `5` |
-| `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert (never a lockout) | `50` |
-| `session_max_attempts` | Failed attempts per browser session before blocking | `3` |
 | `secret_key` | Session signing key, 16+ characters (or set `FLASK_SECRET_KEY`); empty means one kept in `DOOROPENER_SECRET_KEY_FILE`, or a random one per start | `""` |
-| `trusted_proxies` | Reverse proxies whose `X-Forwarded-For` is believed; `0` = clients connect directly | `0` |
-| `ha_cert_pem` | Inline PEM certificate for self-signed HA (see below) | `""` |
 
 ### Environment variables
 
@@ -146,10 +163,6 @@ FLASK_SECRET_KEY=
 DOOROPENER_SECRET_KEY_FILE=/app/logs/secret_key
 ```
 
-The session cookie is HTTPS-only whenever the request came over HTTPS:
-DoorOpener's own (`ssl`), or a reverse proxy's when `trusted_proxies` is set.
-There is nothing to configure for it.
-
 Configuration priority: environment variables > `options.json` defaults.
 
 ### Logs
@@ -159,16 +172,25 @@ Configuration priority: environment variables > `options.json` defaults.
 | Door access / audit log | `/app/logs/log.txt` (bind-mount `./logs:/app/logs`) |
 | Gunicorn / access log | Container stdout/stderr (`docker logs dooropener`) |
 
-### HTTPS
+### Choose a setup
 
-DoorOpener can serve HTTPS itself, on its usual port. Set `"ssl": true`;
-`certfile` and `keyfile` name the certificate (with its full chain) and its
-private key. A bare file name is looked up in `/ssl`; a full path is used as given.
+How guests reach the keypad decides two settings, `ssl` and `trusted_proxies`.
+It is the same as a Home Assistant app and standalone; only where the
+certificate comes from differs.
 
-- **Home Assistant app**: turn on `ssl` in the app configuration. With the
-  Let's Encrypt app that is all: it writes `fullchain.pem` and `privkey.pem` to
-  `/ssl`, which are the defaults. The watchdog and **Open Web UI** switch to
-  https by themselves.
+| Setup | `ssl` | `trusted_proxies` | Keypad address |
+|-------|-------|-------------------|----------------|
+| **A. DoorOpener serves HTTPS** (recommended when the keypad is reachable from the internet) | `true` | `0` | `https://door.example.com:6532` |
+| **B. Behind a reverse proxy or tunnel that does HTTPS** (NGINX Proxy Manager, Cloudflare tunnel, Caddy, Traefik, ...) | `false` | `1` | the proxy's address |
+| **C. Plain HTTP, home network only** | `false` | `0` | `http://<host>:6532` |
+
+**A.** DoorOpener serves HTTPS on its usual port; `certfile` and `keyfile`
+name the certificate (with its full chain) and its private key. A bare file name
+is looked up in `/ssl`; a full path is used as given.
+
+- **Home Assistant app**: turn on **HTTPS**. With the Let's Encrypt app (or the
+  DuckDNS app, without a domain of your own) that is all: it writes
+  `fullchain.pem` and `privkey.pem` to `/ssl`, which are the defaults.
 - **Docker**: put the two files in `./ssl` and uncomment the `./ssl:/ssl:ro`
   line in `docker-compose.yml`. Or mount your certbot folder and give full paths:
 
@@ -177,9 +199,11 @@ private key. A bare file name is looked up in `/ssl`; a full path is used as giv
   ```
 
   ```json
-  "ssl": true,
-  "certfile": "/etc/letsencrypt/live/door.example.com/fullchain.pem",
-  "keyfile": "/etc/letsencrypt/live/door.example.com/privkey.pem"
+  "settings": {
+    "ssl": true,
+    "certfile": "/etc/letsencrypt/live/door.example.com/fullchain.pem",
+    "keyfile": "/etc/letsencrypt/live/door.example.com/privkey.pem"
+  }
   ```
 
   Mount all of `/etc/letsencrypt`: the files in `live/` are links into `archive/`.
@@ -187,38 +211,40 @@ private key. A bare file name is looked up in `/ssl`; a full path is used as giv
 Renewals need nothing. Every new connection gets the certificate as it is on
 disk, so a renewed one is served at once, without a restart. A renewal caught
 halfway (new certificate, old key) keeps the previous certificate until both
-files are in place.
+files are in place. Open DoorOpener by the name on its certificate: an IP
+address gets a certificate warning, and plain `http://` no longer answers.
+DoorOpener refuses to start while the certificate or key is missing, or the two
+do not belong together, and the log says which files it tried. A client must
+finish each request within 15 seconds, so slow connections cannot hold the
+server's threads.
 
-With `ssl` on:
+**B.** The proxy does HTTPS and buffers requests, so slow clients are its
+problem. With `trusted_proxies` at `1`, the brute-force limits see each
+visitor's own address, which DoorOpener takes from the proxy's
+`X-Forwarded-For`, and only when the connection comes from a private, loopback
+or link-local address, where your proxy runs: a client on the internet that
+reaches the port around the proxy cannot pick its own address. With `0` behind
+a proxy, every visitor shares the proxy's address, so one person's wrong PINs
+block everyone. Close the port to the internet if you can.
 
-- Open DoorOpener by the name on its certificate, e.g. `https://door.example.com:6532`.
-  An IP address gets a certificate warning, and plain `http://` no longer answers.
-- Session cookies are sent over HTTPS only.
-- DoorOpener refuses to start while the certificate or key is missing, or the
-  two do not belong together, and the log says which files it tried.
+**C.** Works out of the box, but PINs travel unencrypted: do not forward the
+port to the internet this way.
 
-Behind your own HTTPS reverse proxy, leave `ssl` off and set `trusted_proxies`
-instead; the cookie then follows the proxy's HTTPS.
+The session cookie follows the setup by itself: HTTPS-only whenever the request
+came over HTTPS (A, and B through the proxy's `X-Forwarded-Proto`), a normal
+cookie over plain HTTP (C), where an HTTPS-only one would never come back and
+the keypad could not open the door. There is nothing to configure for it.
 
 ### Home Assistant with a self-signed certificate
 
-If your Home Assistant uses a self-signed certificate, paste the PEM certificate directly into the `ha_cert_pem` option.
-
-In `options.json`:
+Standalone only: an app reaches Home Assistant through the Supervisor. If the
+`ha_url` you give uses HTTPS with a self-signed or private-CA certificate, paste
+that certificate (PEM) into the `ha_cert_pem` option in `options.json`:
 
 ```json
 {
   "ha_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIFTjCCA...\n-----END CERTIFICATE-----"
 }
-```
-
-In the HA add-on YAML config (Settings -> Add-ons -> DoorOpener -> Configuration):
-
-```yaml
-ha_cert_pem: |-
-  -----BEGIN CERTIFICATE-----
-  MIIFTjCCAzagAwIBAgIIAQ3X7arBz...
-  -----END CERTIFICATE-----
 ```
 
 The certificate is written to a temporary file at startup and used for all Home Assistant API calls.
@@ -254,7 +280,7 @@ The certificate is written to a temporary file at startup and used for all Home 
 | **Input validation** | PINs are 4-8 ASCII digits; request bodies are capped at 64 KiB |
 | **Security headers** | CSP with scripts from DoorOpener only, X-Frame-Options DENY (SAMEORIGIN for Home Assistant's frame), no-sniff, etc. |
 
-Rate limits trust `X-Forwarded-For` only for the `trusted_proxies` hops you configure, so a client that reaches the port directly cannot pick its own IP.
+Rate limits trust `X-Forwarded-For` only for the `trusted_proxies` hops you configure, and only from a proxy on your own network, so a client that reaches the port directly cannot pick its own IP.
 
 ### Security headers
 

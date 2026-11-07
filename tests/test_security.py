@@ -2,7 +2,11 @@
 import json
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
+
 import pytest
+from werkzeug.test import Client
+
+from security import LocalProxyFix
 
 
 @pytest.fixture
@@ -288,3 +292,29 @@ def test_admin_ip_block_across_sessions(_client, app_module, monkeypatch):
     assert r.status_code == 429
     assert "blocked_until" in r.get_json()
 
+
+
+# ---------------------------------------------------------------------------
+# X-Forwarded-For is believed only from a proxy on the local network
+# ---------------------------------------------------------------------------
+
+
+def _seen_address(peer, forwarded="203.0.113.7", proto="https"):
+    def echo(environ, start_response):
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [f"{environ['REMOTE_ADDR']} {environ['wsgi.url_scheme']}".encode()]
+    r = Client(LocalProxyFix(echo, hops=1)).get(
+        "/", environ_base={"REMOTE_ADDR": peer},
+        headers={"X-Forwarded-For": forwarded, "X-Forwarded-Proto": proto})
+    return r.get_data(as_text=True).split()
+
+
+@pytest.mark.parametrize("proxy", ["127.0.0.1", "172.30.33.4", "192.168.0.20", "10.1.2.3", "::1",
+                                   "fd00::5", "::ffff:192.168.0.20"])
+def test_a_proxy_on_the_local_network_is_believed(proxy):
+    assert _seen_address(proxy) == ["203.0.113.7", "https"]
+
+
+@pytest.mark.parametrize("stranger", ["8.8.8.8", "1.1.1.1", "2a00:1450:4001::1", "not-an-address"])
+def test_a_client_on_the_internet_cannot_pick_its_address(stranger):
+    assert _seen_address(stranger) == [stranger, "http"]

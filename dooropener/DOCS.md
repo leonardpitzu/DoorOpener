@@ -24,24 +24,56 @@ is in the **Network** section.
 | Option | What it does |
 |--------|--------------|
 | **Door entity** | The switch, lock, input_boolean or button that opens the door, e.g. `button.intercom_open`. Required |
-| **HTTPS** | Serve the keypad over HTTPS with the certificate in `/ssl` (see below) |
-| **Test mode** | Go through the motions without opening the door |
+| **Battery sensor (optional)** | A sensor with the opener's battery level in %, shown on the keypad. Empty if it has none |
+
+**DoorOpener settings** (a section of its own):
+
+| Option | What it does |
+|--------|--------------|
+| **HTTPS** | Serve the keypad over HTTPS with a certificate from `/ssl` (see [Choose a setup](#choose-a-setup)) |
+| **Certificate file (file name in /ssl)** | Default `fullchain.pem` |
+| **Private key file (file name in /ssl)** | Default `privkey.pem` |
+| **Reverse proxies in front** | `0` when browsers connect directly, `1` behind a proxy or tunnel (see [Choose a setup](#choose-a-setup)) |
+| **Admin password on the keypad port (optional)** | Also offer the admin panel on port 6532, behind this password (see below) |
 | **Wrong PINs per device** | Wrong PINs from one IP address before it is blocked |
 | **Wrong PINs per browser** | Wrong PINs from one browser before it is blocked; also the wrong admin passwords allowed per IP address |
 | **First block (minutes)** | How long the first block lasts. Each further block doubles, up to 24 hours; a correct PIN resets it |
 | **Alert threshold per hour** | Wrong PINs per hour, from everyone together, that raise a brute-force alert. Never a lockout |
+| **Test mode** | Go through the motions without opening the door |
 
-Optional, under **Show unused optional configuration options**:
+### Choose a setup
 
-| Option | What it does |
-|--------|--------------|
-| **Battery sensor** | A sensor with the opener's battery level in %, shown on the keypad |
-| **Admin password on the keypad port** | Also offer the admin panel on port 6532, behind this password (see below) |
-| **Certificate file** / **Private key file** | Files in `/ssl`, if not `fullchain.pem` / `privkey.pem` |
-| **Reverse proxies in front** | See below; `0` (the default) when browsers connect directly |
+How guests reach the keypad decides two settings. The admin panel is not
+affected: it always opens inside Home Assistant, however you reach that.
 
-The session cookie is HTTPS-only whenever the keypad is reached over HTTPS;
-there is no setting for it.
+| Setup | HTTPS | Reverse proxies in front | Keypad address |
+|-------|-------|--------------------------|----------------|
+| **A. DoorOpener serves HTTPS** (recommended when the keypad is reachable from the internet) | on | `0` | `https://your.domain:6532` |
+| **B. Behind a reverse proxy or tunnel that does HTTPS**: NGINX Proxy Manager, the Cloudflared app, Caddy, ... | off | `1` | the proxy's address |
+| **C. Plain HTTP, home network only** | off | `0` | `http://homeassistant.local:6532` |
+
+- **A** needs a certificate in `/ssl`: the Let's Encrypt app, or the DuckDNS app
+  if you have no domain of your own. Renewals are picked up without a restart.
+  Open the keypad by the name on the certificate; plain `http://` and IP
+  addresses stop working. If the certificate or key is missing, or they do not
+  match, DoorOpener does not start and its log says why.
+- **B** gets HTTPS from the proxy. With `1`, the brute-force limits see each
+  visitor's own address, which DoorOpener takes from the proxy's
+  `X-Forwarded-For`, and only from a proxy on your network: a client on the
+  internet that reaches port 6532 around the proxy cannot pick its own address.
+  With `0` behind a proxy, every visitor shares the proxy's address, so one
+  person's wrong PINs block everyone. Close port 6532 to the internet if you can.
+- **C** works out of the box, but PINs travel unencrypted: do not forward the
+  port to the internet this way.
+
+The session cookie follows the setup by itself: HTTPS-only whenever the keypad
+is reached over HTTPS (A, B), a normal cookie over plain HTTP (C), where an
+HTTPS-only one would never come back and the keypad could not open the door.
+Through Home Assistant, the admin panel uses no cookie at all.
+
+In A, a client must finish each request within 15 seconds, so a few
+deliberately slow connections cannot freeze the keypad; in B the proxy takes
+care of that.
 
 ### The admin panel
 
@@ -81,33 +113,6 @@ Every opening fires a `dooropener_door_opened` event with the user's name
 by alice"). Use the event in automations, for example to be told when a guest
 arrives. Test mode sends neither.
 
-### HTTPS
-
-Turn on **HTTPS** and DoorOpener serves HTTPS itself, on the same port, with the
-certificate in Home Assistant's `/ssl` folder. With the Let's Encrypt app,
-nothing else is needed: the certificate and key files default to the
-`fullchain.pem` and `privkey.pem` it writes there, and a renewed certificate is
-served from the next connection on, without a restart. The watchdog and
-**Open Web UI** switch to https by themselves.
-
-Open DoorOpener by the name on the certificate (for example
-`https://example.duckdns.org:6532`); plain `http://` links stop working. If the
-certificate or key is missing, or they do not match, DoorOpener does not start
-and its log says why.
-
-With HTTPS on, a client must finish each request within 15 seconds, so a few
-deliberately slow connections cannot freeze the keypad.
-
-### Reverse proxies
-
-Every brute-force limit counts per client IP, so DoorOpener must know the real
-one. Leave **Reverse proxies in front** at `0` when browsers reach port 6532 directly: the
-`X-Forwarded-For` header is then ignored, because anyone could forge it. Set it
-to `1` when exactly one reverse proxy (NGINX Proxy Manager, Caddy, a Cloudflare
-tunnel, ...) sits in front, and only if port 6532 cannot be reached around it.
-With `0` behind a proxy, every visitor shares the proxy's IP, so one person's
-wrong PINs block everyone.
-
 ## Security
 
 - **Brute-force blocks** double with every repeat (5 min, 10 min, 20 min, ...
@@ -125,4 +130,11 @@ All app data is stored in `/data/` (persisted across restarts):
 
 - `options.json` - configuration (managed by HA)
 - `users.json` - users, with hashed PINs
+- `secret_key` - the session signing key, generated on the first start
 - `logs/log.txt` - audit log
+
+## Upgrading
+
+- **2.10**: DoorOpener's own settings moved into the **DoorOpener settings**
+  section. Home Assistant does not carry values across such a move, so check
+  them once after updating.
