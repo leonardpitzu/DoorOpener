@@ -1,37 +1,81 @@
-"""Audit trail: one JSON line per door or admin event, in a size-rotated file."""
+"""Audit trail: one JSON line per door or admin event, in one circular file.
+
+The log keeps the last ``RETENTION`` (180 days) and at most ``max_bytes``: as new
+entries arrive, the oldest are dropped. Before 3.0 the log rotated into
+log.txt.1 ... log.txt.5, which the admin panel never showed; those are folded
+back into the one file at start, oldest first, and then trimmed like the rest.
+"""
 
 import json
-import logging
 import os
-from logging.handlers import RotatingFileHandler
+import stat
+import tempfile
+import threading
+import time
+from datetime import datetime, timedelta
 
 from config import get_current_time
 
+RETENTION = timedelta(days=180)
 _TEST_MODE_MARKER = "TEST MODE"
 _BYTES_PER_ENTRY = 250  # generous estimate, to read just enough of the file's tail
+_PRUNE_EVERY = 3600.0  # seconds: how often old entries are looked for, besides when the file is full
+_FILL_AFTER_PRUNE = 0.9  # a full log is trimmed to this share of max_bytes, not rewritten on every entry
+_OLD_ROTATIONS = 9
 
 
 class AuditLog:
-    """The append-only event log that the admin dashboard reads back."""
+    """The event log that the admin dashboard reads back."""
 
-    def __init__(self, path: str, max_bytes: int = 1_000_000, backups: int = 5):
+    def __init__(self, path: str, max_bytes: int = 5_000_000, retention: timedelta = RETENTION):
         self.path = path
+        self.max_bytes = max_bytes
+        self.retention = retention
+        self.lock = threading.RLock()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        # A handler of its own rather than a named logger: no global logging state,
-        # so two logs (say, the app's and a test's) can never cross wires.
-        self._handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
-        self._handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        self._size = 0
+        self._pruned_at = 0.0
+        with self.lock:
+            self._fold_old_rotations()
+            with open(path, "a", encoding="utf-8"):
+                pass  # the log exists from the start, as an empty file
+            self.prune()
 
     def record(self, ip: str, session_id: str | None, user: str, status: str, details: str) -> None:
-        entry = json.dumps({
+        line = json.dumps({
             "timestamp": get_current_time().isoformat(),
             "ip": ip,
             "session": session_id[:8] if session_id else "unknown",
             "user": user,
             "status": status,
             "details": details,
-        })
-        self._handler.handle(logging.makeLogRecord({"msg": entry, "levelno": logging.INFO, "levelname": "INFO"}))
+        }) + "\n"
+        with self.lock:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line)
+            self._size += len(line.encode("utf-8"))
+            if self._size > self.max_bytes or time.monotonic() - self._pruned_at > _PRUNE_EVERY:
+                self.prune()
+
+    def prune(self) -> int:
+        """Drop the entries older than the retention, then the oldest until the log fits. Returns how many."""
+        with self.lock:
+            lines = self._read_lines()
+            cutoff = get_current_time() - self.retention
+            kept = [line for line in lines if _parse(line) and not _older_than(line, cutoff)]
+            sizes = [len(line.encode("utf-8")) for line in kept]
+            total = sum(sizes)
+            if total > self.max_bytes:
+                budget, drop = self.max_bytes * _FILL_AFTER_PRUNE, 0
+                while total > budget and drop < len(kept):
+                    total -= sizes[drop]
+                    drop += 1
+                kept = kept[drop:]
+            if len(kept) != len(lines):
+                self._rewrite(kept)
+            self._size = total
+            self._pruned_at = time.monotonic()
+            return len(lines) - len(kept)
 
     def tail(self, limit: int = 500) -> list[dict]:
         """The newest *limit* entries, oldest first, reading only the end of the file."""
@@ -49,22 +93,59 @@ class AuditLog:
 
     def clear(self, *, test_only: bool = False) -> tuple[int, int]:
         """Remove every entry, or only the test-mode ones. Returns ``(removed, kept)``."""
-        # The handler's lock keeps any entry from landing between the read and the
-        # rewrite. Rewriting in place, rather than swapping in a new file, keeps the
-        # handler's append-mode stream pointed at the live file, so logging carries on.
-        with self._handler.lock:
+        with self.lock:
             lines = self._read_lines()
             kept = [line for line in lines if test_only and not _is_test_entry(line)]
-            with open(self.path, "w", encoding="utf-8") as f:
-                f.writelines(kept)
+            self._rewrite(kept)
+            self._size = sum(len(line.encode("utf-8")) for line in kept)
         return len(lines) - len(kept), len(kept)
 
-    def _read_lines(self) -> list[str]:
+    def _read_lines(self, path: str | None = None) -> list[str]:
         try:
-            with open(self.path, encoding="utf-8", errors="replace") as f:
-                return f.readlines()
+            with open(path or self.path, encoding="utf-8", errors="replace") as f:
+                return [line if line.endswith("\n") else line + "\n" for line in f]
         except FileNotFoundError:
             return []
+
+    def _rewrite(self, lines: list[str]) -> None:
+        """Replace the file's contents in one step, so a crash leaves the old log or the new one."""
+        fd, tmp = tempfile.mkstemp(prefix=".log-", dir=os.path.dirname(self.path) or ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            # mkstemp makes the file private; keep the log as readable as it was.
+            try:
+                mode = stat.S_IMODE(os.stat(self.path).st_mode)
+            except FileNotFoundError:
+                mode = 0o644
+            os.chmod(tmp, mode)
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _fold_old_rotations(self) -> None:
+        rotated = [f"{self.path}.{n}" for n in range(_OLD_ROTATIONS, 0, -1) if os.path.exists(f"{self.path}.{n}")]
+        if not rotated:
+            return
+        lines = [line for path in rotated for line in self._read_lines(path)] + self._read_lines()
+        self._rewrite(lines)
+        for path in rotated:
+            os.remove(path)
+
+
+def _older_than(line: str, cutoff: datetime) -> bool:
+    row = _parse(line)
+    try:
+        moment = datetime.fromisoformat(str(row["timestamp"]).replace(",", "."))
+    except (TypeError, ValueError):
+        return False  # keep what cannot be dated rather than guess
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=cutoff.tzinfo)
+    return moment < cutoff
 
 
 def _parse(line: str) -> dict | None:

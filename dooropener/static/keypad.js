@@ -1,12 +1,33 @@
 // DoorOpener keypad. The server passes its settings as data- attributes on <body>;
-// BASE is the path DoorOpener is served under ('' on its own port).
+// BASE is the path DoorOpener is served under ('' on its own port). A shortcut
+// page (/barrier, /barrier+door) names its doors in data-doors.
 const PAGE = document.body.dataset;
 const BASE = PAGE.base || '';
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+const SHORTCUT_DOORS = PAGE.doors ? PAGE.doors.split('+') : null;
 let currentPin = '';
 let isSubmitting = false;
 let autoSubmitTimer = null;
 let blockCountdownTimer = null;
+let choiceTimer = null;
+
+// By the phone's own clock: the keypad never says whose PIN it was.
+function greeting() {
+    const hour = new Date().getHours();
+    if (hour >= 5 && hour < 12) return 'Good morning';
+    if (hour >= 12 && hour < 18) return 'Good afternoon';
+    return 'Good evening';
+}
+
+function postJson(path, body) {
+    return fetch(BASE + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+        credentials: 'same-origin',
+        cache: 'no-store',
+        body: JSON.stringify(body),
+    }).then(response => response.json().then(data => ({ status: response.status, data })));
+}
 
 document.querySelectorAll('.keypad-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -24,7 +45,7 @@ document.querySelectorAll('.keypad-btn').forEach(btn => {
 });
 
 function addDigit(digit) {
-    if (isSubmitting) return;
+    if (isSubmitting || !document.getElementById('choice').hidden) return;
     if (currentPin.length < 8) {
         currentPin += digit;
         updatePinDisplay();
@@ -90,48 +111,21 @@ function openDoor() {
     isSubmitting = true;
     if (autoSubmitTimer) { clearTimeout(autoSubmitTimer); autoSubmitTimer = null; }
 
-    // Send request to open door
-    fetch(BASE + '/open-door', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': CSRF_TOKEN,
-        },
-        credentials: 'same-origin',
-        cache: 'no-store',
-        body: JSON.stringify({ pin: pin })
-    })
-        .then(response => response.json().then(data => ({ status: response.status, data })))
+    const body = { pin: pin };
+    if (SHORTCUT_DOORS) body.doors = SHORTCUT_DOORS;
+    postJson('/open-door', body)
         .then(({ status, data }) => {
             if (status === 200 && data.status === 'success') {
-                showStatus('Success: ' + data.message, 'success');
-
-                // Play success sound and fancy vibration
-                playSuccessSound();
-                if (window.navigator.vibrate) {
-                    // Fancy "ta-da" vibration pattern: short-long-short with crescendo
-                    window.navigator.vibrate([50, 30, 150, 50, 80, 30, 200]);
-                }
-                showAccessGrantedPopup();
+                celebrate(data.message);
+            } else if (status === 200 && data.status === 'choose') {
+                showChoice(data);
+            } else if (status === 403 && data.status === 'refused') {
+                showRefused(data.message);
             } else {
                 if (data && data.blocked_until) {
                     startBlockCountdown(data.blocked_until);
                 }
-                // Error (invalid PIN, blocked, etc)
-                showStatus('Error: ' + data.message, 'error');
-
-                // Change button to red cross on failure
-                const submitBtn = document.getElementById('submitBtn');
-                submitBtn.style.background = 'linear-gradient(135deg, #dc3545, #c82333)';
-                submitBtn.textContent = '✗';
-
-                // Play failure sound and enhanced vibration
-                playFailureSound();
-                showAccessDeniedPopup();
-                if (window.navigator.vibrate) {
-                    // Enhanced failure vibration pattern: strong buzz with pauses
-                    window.navigator.vibrate([200, 100, 200, 100, 300]);
-                }
+                deny(data.message);
             }
         })
         .catch(error => {
@@ -140,10 +134,7 @@ function openDoor() {
         .finally(() => {
             // Reset button and clear PIN after attempt
             setTimeout(() => {
-                const submitBtn = document.getElementById('submitBtn');
-                submitBtn.style.background = 'linear-gradient(135deg, #4CAF50, #45a049)';
-                submitBtn.textContent = '✓';
-
+                resetSubmitButton();
                 currentPin = '';
                 updatePinDisplay();
                 isSubmitting = false;
@@ -151,7 +142,114 @@ function openDoor() {
         });
 }
 
-function showStatus(message, type, persistent) {
+function resetSubmitButton() {
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.style.background = 'linear-gradient(135deg, #4CAF50, #45a049)';
+    submitBtn.textContent = '✓';
+}
+
+function celebrate(message) {
+    showStatus(greeting() + ' · ' + message, 'success');
+    playSuccessSound();
+    if (window.navigator.vibrate) {
+        // Fancy "ta-da" vibration pattern: short-long-short with crescendo
+        window.navigator.vibrate([50, 30, 150, 50, 80, 30, 200]);
+    }
+    showAccessGrantedPopup();
+}
+
+function deny(message) {
+    showStatus('Error: ' + message, 'error');
+    // Change button to red cross on failure
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.style.background = 'linear-gradient(135deg, #dc3545, #c82333)';
+    submitBtn.textContent = '✗';
+    playFailureSound();
+    showAccessDeniedPopup();
+    if (window.navigator.vibrate) {
+        // Enhanced failure vibration pattern: strong buzz with pauses
+        window.navigator.vibrate([200, 100, 200, 100, 300]);
+    }
+}
+
+// The PIN is right but not for now (its owner's phone gets told why): calm, not an alarm.
+function showRefused(message) {
+    showStatus(message, 'refused', false, 7000);
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.style.background = 'linear-gradient(135deg, #f0a500, #d48f00)';
+    submitBtn.textContent = '!';
+    if (window.navigator.vibrate) window.navigator.vibrate(120);
+}
+
+// --- Several doors: one tile each, for as long as the pass lasts ---
+function setKeypadShown(shown) {
+    document.getElementById('keypad').style.display = shown ? 'grid' : 'none';
+    document.getElementById('pinDisplay').style.display = shown ? 'flex' : 'none';
+    document.getElementById('choice').hidden = shown;
+}
+
+function showChoice(data) {
+    const tiles = document.getElementById('tiles');
+    tiles.textContent = '';
+    data.doors.forEach(door => {
+        const tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'tile';
+        const icon = document.getElementById('icon-' + door.icon) || document.getElementById('icon-door');
+        tile.appendChild(icon.content.cloneNode(true));
+        const name = document.createElement('span');
+        name.className = 'tile-name';
+        name.textContent = door.name;
+        tile.appendChild(name);
+        if (door.battery) {
+            const level = document.createElement('span');
+            level.className = 'tile-battery';
+            tile.appendChild(level);
+            fetchBattery(door.id).then(value => { if (value !== null) level.textContent = '🔋 ' + value + '%'; });
+        }
+        tile.addEventListener('click', () => chooseDoor(data.pass, door.id, tiles));
+        tiles.appendChild(tile);
+    });
+    document.getElementById('choiceTitle').textContent = greeting() + '. Which one?';
+    setKeypadShown(false);
+
+    const countdown = document.getElementById('choiceCountdown');
+    const ends = Date.now() + data.expires_in * 1000;
+    const tick = () => {
+        const left = Math.ceil((ends - Date.now()) / 1000);
+        if (left <= 0) {
+            closeChoice();
+            showStatus('Too slow: enter the PIN again', 'error');
+            return;
+        }
+        countdown.textContent = 'closes in ' + left + ' s';
+    };
+    if (choiceTimer) clearInterval(choiceTimer);
+    choiceTimer = setInterval(tick, 1000);
+    tick();
+}
+
+function closeChoice() {
+    if (choiceTimer) { clearInterval(choiceTimer); choiceTimer = null; }
+    setKeypadShown(true);
+}
+
+function chooseDoor(pass, doorId, tiles) {
+    tiles.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    postJson('/open-door/choice', { pass: pass, door: doorId })
+        .then(({ status, data }) => {
+            closeChoice();
+            if (status === 200 && data.status === 'success') celebrate(data.message);
+            else deny(data.message);
+        })
+        .catch(() => {
+            closeChoice();
+            showStatus('Error: Could not connect to server', 'error');
+        })
+        .finally(() => setTimeout(resetSubmitButton, 1200));
+}
+
+function showStatus(message, type, persistent, duration) {
     const toastContainer = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = 'toast ' + type;
@@ -164,7 +262,7 @@ function showStatus(message, type, persistent) {
         setTimeout(() => {
             toast.classList.remove('show');
             setTimeout(() => toast.remove(), 500);
-        }, 3500);
+        }, duration || 3500);
     }
 }
 
@@ -224,20 +322,24 @@ function updateBatteryLevel(level) {
     batteryIcon.style.backgroundRepeat = 'no-repeat';
 }
 
-function fetchBatteryLevel() {
-    fetch(BASE + '/battery', { credentials: 'same-origin', cache: 'no-store' })
+// A door's battery level in %, or null.
+function fetchBattery(doorId) {
+    return fetch(BASE + '/battery?door=' + encodeURIComponent(doorId), { credentials: 'same-origin', cache: 'no-store' })
         .then(response => response.json())
-        .then(data => {
-            if (data.level === null || data.level === "null" || data.level === undefined) {
-                document.getElementById("battery-container").style.display = "none";
-            } else {
-                document.getElementById("battery-container").style.display = "flex";
-                updateBatteryLevel(Number(data.level));
-            }
-        })
-        .catch(error => {
-            document.getElementById("battery-container").style.display = "none";
-        });
+        .then(data => (data.level === null || data.level === undefined) ? null : Number(data.level))
+        .catch(() => null);
+}
+
+function fetchBatteryLevel() {
+    fetchBattery(PAGE.batteryDoor).then(level => {
+        const container = document.getElementById("battery-container");
+        if (level === null) {
+            container.style.display = "none";
+        } else {
+            container.style.display = "flex";
+            updateBatteryLevel(level);
+        }
+    });
 }
 
 function playSuccessSound() {
@@ -367,7 +469,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Battery level: fetch now, then every 60s while the tab is visible. A
     // backgrounded tab pauses polling and refetches when it comes back.
-    if (PAGE.battery === '1') {
+    if (PAGE.batteryDoor) {
         let batteryPollTimer = null;
         const startBatteryPolling = () => {
             if (batteryPollTimer === null) {
@@ -389,6 +491,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initialize PIN display
     updatePinDisplay();
+    document.getElementById('choiceCancel').addEventListener('click', closeChoice);
 
     // Add keyboard support; ignore auto-repeat when key is held down
     document.addEventListener('keydown', function (event) {
@@ -403,7 +506,7 @@ document.addEventListener('DOMContentLoaded', function () {
             clearPin();
             event.preventDefault();
         } else if (event.key === 'Enter') {
-            if (!isSubmitting) openDoor();
+            if (!isSubmitting && document.getElementById('choice').hidden) openDoor();
             event.preventDefault();
         }
     });

@@ -367,3 +367,63 @@ select, input {
     padding: 2rem 1rem;
     color: rgba(0, 0, 0, 0.75);
 }
+
+/* Doors, kind and schedule rows in the user dialog */
+.doors-pick, .kind {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+}
+.doors-pick label, .kind label, .enabled-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 500;
+}
+.doors-pick input, .kind input, .enabled-box input { width: auto; }
+.enabled-box { margin-top: 12px; }
+.guest-fields {
+    margin-top: 6px;
+    padding: 6px 10px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.25);
+}
+.guest-fields[hidden] { display: none; }
+.quick {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 0.9em;
+}
+.quick-btn {
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    background: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    font: inherit;
+}
+.sched-row {
+    margin: 8px 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.25);
+}
+.sched-row .hours { margin-top: 6px; }
+.row-remove {
+    margin-left: auto;
+    border: none;
+    background: transparent;
+    font-size: 16px;
+    cursor: pointer;
+    color: rgba(0, 0, 0, 0.6);
+}
+.add-row { margin-top: 4px; padding: 6px 12px; }
+
+/* Phones: the user list stays visible (the log has its own card list) */
+@media (max-width: 768px) {
+    #usersContainer.table-responsive { display: block; overflow-x: auto; }
+}
+#ax_uses { width: 220px; max-width: 100%; }

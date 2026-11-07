@@ -7,6 +7,7 @@ const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 let allLogs = [];
 let allUsers = [];
+let allDoors = [];  // the configured doors: [{id, name, icon, battery}]
 let filteredLogs = [];
 let isAuthenticated = false;
 
@@ -121,6 +122,7 @@ async function loadUsers() {
         const res = await fetch(BASE + '/admin/users', { credentials: 'same-origin', cache: 'no-store' });
         const data = await res.json();
         allUsers = data.users || [];
+        allDoors = data.doors || [];
         renderUsers(allUsers);
     } catch (e) {
         const tbody = document.getElementById('usersTableBody');
@@ -136,22 +138,23 @@ function renderUsers(users) {
         return;
     }
     const rows = users.map(u => {
-        const activeStr = u.active ? 'Yes' : 'No';
         const created = u.created_at ? new Date(u.created_at).toLocaleString() : '-';
         const lastUsed = u.last_used_at ? new Date(u.last_used_at).toLocaleString() : '-';
         const timesUsed = u.times_used || 0;
-        const src = u.source || 'store';
+        // An expired guest needs a new end date, so Enable opens the editor for them.
+        const toggle = u.active ? 'Disable' : 'Enable';
+        const toggleAction = (!u.active && u.finished === 'EXPIRED') ? 'edit' : 'toggle';
         const actionsHtml = `
             <button class="refresh-btn" data-action="edit" data-user="${escapeAttr(u.username)}" style="padding:6px 10px; background: linear-gradient(135deg, #5e35b1, #4527a0);">Edit</button>
-            <button class="refresh-btn" data-action="toggle" data-user="${escapeAttr(u.username)}" data-active="${u.active ? 'false' : 'true'}" style="padding:6px 10px; background: linear-gradient(135deg, #00897b, #00695c);">${u.active ? 'Deactivate' : 'Activate'}</button>
+            <button class="refresh-btn" data-action="${toggleAction}" data-user="${escapeAttr(u.username)}" data-active="${u.active ? 'false' : 'true'}" style="padding:6px 10px; background: linear-gradient(135deg, #00897b, #00695c);">${toggle}</button>
             <button class="refresh-btn" data-action="delete" data-user="${escapeAttr(u.username)}" style="padding:6px 10px; background: linear-gradient(135deg, #e53935, #c62828);">Delete</button>
         `;
         return `
             <tr>
                 <td data-label="Username">${escapeHtml(u.username)}</td>
-                <td data-label="Active">${activeStr}</td>
-                <td data-label="Access">${escapeHtml(describeAccess(u.access))}</td>
-                <td data-label="Source">${src}</td>
+                <td data-label="Enabled">${escapeHtml(describeEnabled(u))}</td>
+                <td data-label="Doors">${escapeHtml(describeDoors(u.doors))}</td>
+                <td data-label="Access">${escapeHtml(describeAccess(u.access, u))}</td>
                 <td data-label="Created">${created}</td>
                 <td data-label="Last Used">${lastUsed}</td>
                 <td data-label="Times Used">${timesUsed}</td>
@@ -161,13 +164,26 @@ function renderUsers(users) {
     tbody.innerHTML = rows;
 }
 
+function describeEnabled(u) {
+    if (u.active) return 'Yes';
+    const when = u.finished_at ? ' ' + new Date(u.finished_at).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
+    if (u.finished === 'EXPIRED') return 'No · expired' + when;
+    if (u.finished === 'USED_UP') return 'No · used up' + when;
+    return 'No';
+}
+
+function describeDoors(ids) {
+    const names = (ids || []).map(id => (allDoors.find(d => d.id === id) || {}).name).filter(Boolean);
+    return names.length ? names.join(', ') : 'none';
+}
+
 // --- Sexy Modal Framework ---
 function showModal(title, fieldsHtml, onSubmit) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.35); display:flex; align-items:center; justify-content:center; z-index:9999;';
     const card = document.createElement('div');
-    card.style.cssText = 'min-width:320px; max-width:92vw; background: linear-gradient(135deg, rgba(255,255,255,0.5), rgba(255,255,255,0.25)); border:1px solid rgba(255,255,255,0.5); border-radius:16px; backdrop-filter: blur(14px); box-shadow: 0 12px 40px rgba(0,0,0,0.25); padding:20px;';
+    card.style.cssText = 'min-width:320px; max-width:92vw; max-height:90vh; overflow-y:auto; box-sizing:border-box; background: linear-gradient(135deg, rgba(255,255,255,0.5), rgba(255,255,255,0.25)); border:1px solid rgba(255,255,255,0.5); border-radius:16px; backdrop-filter: blur(14px); box-shadow: 0 12px 40px rgba(0,0,0,0.25); padding:20px;';
     card.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
             <h3 style="margin:0; color:rgba(0,0,0,0.85);">${title}</h3>
@@ -237,11 +253,28 @@ function bindPinGenerator(card, id) {
     });
 }
 
+// The doors a user may open: one box per configured door.
+function doorFields(selected) {
+    if (!allDoors.length) {
+        return '<div class="field-label">May open</div><div class="hint">No doors are set up yet: add them on the app\'s configuration page.</div>';
+    }
+    const boxes = allDoors.map(d =>
+        `<label><input type="checkbox" value="${escapeAttr(d.id)}"${selected.includes(d.id) ? ' checked' : ''}>${escapeHtml(d.name)}</label>`).join('');
+    return `<div class="field-label">May open</div><div class="doors-pick" id="um_doors">${boxes}</div>`;
+}
+
+function readDoors(card) {
+    const doors = [...card.querySelectorAll('#um_doors input:checked')].map(box => box.value);
+    if (allDoors.length && !doors.length) { showToast('Tick at least one door', 'error'); throw new Error('v'); }
+    return doors;
+}
+
 function openAddUser() {
     const fields = `
         <label class="field-label" for="um_username">Username</label>
         <input id="um_username" placeholder="letters, numbers, _-." autocomplete="off" style="width:100%">
         ${pinField('um_pin', 'PIN (4-8 digits)', 'type one, or generate')}
+        ${doorFields(allDoors.length === 1 ? [allDoors[0].id] : [])}
         ${accessFields(null)}
     `;
     const card = showModal('Add User', fields, async (card) => {
@@ -250,30 +283,16 @@ function openAddUser() {
         if (!username) { showToast('Username required', 'error'); throw new Error('v'); }
         if (!/^[-_.A-Za-z0-9]{1,32}$/.test(username)) { showToast('Invalid username', 'error'); throw new Error('v'); }
         if (!/^\d{4,8}$/.test(pin)) { showToast('PIN must be 4-8 digits', 'error'); throw new Error('v'); }
-        await addUser(username, pin, readAccess(card));
+        await addUser(username, pin, readAccess(card), readDoors(card));
     });
     bindPinGenerator(card, 'um_pin');
+    bindAccessFields(card, null);
 }
 
-async function addUser(username, pin, access) {
-    try {
-        const res = await fetch(BASE + '/admin/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
-            credentials: 'same-origin',
-            cache: 'no-store',
-            body: JSON.stringify({ username, pin, active: true, access }),
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            showToast('Create failed: ' + (err.message || res.status), 'error');
-            return;
-        }
-        showToast('User created', 'success');
-        await loadUsers();
-    } catch (e) {
-        showToast('Create failed', 'error');
-    }
+async function addUser(username, pin, access, doors) {
+    const ok = await sendUser('POST', '/admin/users', { username, pin, active: true, access, doors }, 'Create');
+    if (!ok) throw new Error('v');  // keep the dialog open to fix it
+    showToast('User created', 'success');
 }
 
 function openEditUser(username) {
@@ -281,22 +300,27 @@ function openEditUser(username) {
     const fields = `
         <div style="color: rgba(0,0,0,0.7); margin-bottom:6px">Editing <b>${escapeHtml(username)}</b></div>
         ${pinField('um_newpin', 'New PIN (optional)', 'leave blank to keep current')}
+        <label class="enabled-box"><input id="um_active" type="checkbox"${user.active ? ' checked' : ''}> Enabled</label>
+        ${doorFields(user.doors || [])}
         ${accessFields(user.access)}
     `;
     const card = showModal('Edit User', fields, async (card) => {
         const pin = card.querySelector('#um_newpin').value.trim();
         if (pin && !/^\d{4,8}$/.test(pin)) { showToast('PIN must be 4-8 digits', 'error'); throw new Error('v'); }
-        await editUser(username, pin || undefined, readAccess(card));
+        const body = { access: readAccess(card), doors: readDoors(card), active: card.querySelector('#um_active').checked };
+        if (pin) body.pin = pin;
+        const ok = await sendUser('PUT', '/admin/users/' + encodeURIComponent(username), body, 'Update');
+        if (!ok) throw new Error('v');  // keep the dialog, e.g. for a new end date
+        showToast('User updated', 'success');
     });
     bindPinGenerator(card, 'um_newpin');
+    bindAccessFields(card, user.access);
 }
 
-async function editUser(username, pin, access) {
+async function sendUser(method, path, body, what) {
     try {
-        const body = { access };
-        if (pin !== undefined) body.pin = pin;
-        const res = await fetch(BASE + '/admin/users/' + encodeURIComponent(username), {
-            method: 'PUT',
+        const res = await fetch(BASE + path, {
+            method,
             headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
             credentials: 'same-origin',
             cache: 'no-store',
@@ -304,13 +328,14 @@ async function editUser(username, pin, access) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            showToast('Update failed: ' + (err.message || res.status), 'error');
-            return;
+            showToast(what + ' failed: ' + (err.message || res.status), 'error');
+            return false;
         }
-        showToast('User updated', 'success');
         await loadUsers();
+        return true;
     } catch (e) {
-        showToast('Update failed', 'error');
+        showToast(what + ' failed', 'error');
+        return false;
     }
 }
 
@@ -328,7 +353,7 @@ async function toggleActive(username, active) {
             showToast('Toggle failed: ' + (err.message || res.status), 'error');
             return;
         }
-        showToast('User ' + (active ? 'activated' : 'deactivated'), 'success');
+        showToast('User ' + (active ? 'enabled' : 'disabled'), 'success');
         await loadUsers();
     } catch (e) {
         showToast('Toggle failed', 'error');
@@ -356,65 +381,128 @@ async function deleteUser(username) {
     }
 }
 
-// --- Access rules: when a PIN works (guests, cleaners, couriers) ---
+// --- Access rules: full-time or guest, and when a PIN works ---
 // Dates and hours are the door's local time; the server checks them.
 function accessFields(rules) {
     rules = rules || {};
-    const days = rules.days || [0, 1, 2, 3, 4, 5, 6];
-    const hours = rules.hours || ['', ''];
-    const limited = Object.values(rules).some(Boolean);
-    const dayBoxes = DAY_NAMES.map((name, i) =>
-        `<label><input type="checkbox" value="${i}"${days.includes(i) ? ' checked' : ''}>${name}</label>`).join('');
+    const guest = Boolean(rules.valid_until);
     return `
-        <details class="access"${limited ? ' open' : ''}>
-            <summary>Limit when this PIN works</summary>
-            <div class="access-row">
-                <div><label class="field-label" for="ax_from">Valid from</label>
-                    <input id="ax_from" type="datetime-local" value="${escapeAttr(rules.valid_from || '')}"></div>
-                <div><label class="field-label" for="ax_until">Valid until</label>
-                    <input id="ax_until" type="datetime-local" value="${escapeAttr(rules.valid_until || '')}"></div>
+        <div class="access">
+            <div class="field-label">Kind</div>
+            <div class="kind">
+                <label><input type="radio" name="ax_kind" value="full"${guest ? '' : ' checked'}> Full-time</label>
+                <label><input type="radio" name="ax_kind" value="guest"${guest ? ' checked' : ''}> Guest</label>
             </div>
-            <div class="field-label">Days</div>
-            <div class="days" id="ax_days">${dayBoxes}</div>
-            <div class="field-label">Hours <span class="hint">(empty: all day; 22:00 to 06:00 runs overnight)</span></div>
-            <div class="hours">
-                <input id="ax_hours_from" type="time" value="${escapeAttr(hours[0])}" aria-label="From">
-                <span>to</span>
-                <input id="ax_hours_until" type="time" value="${escapeAttr(hours[1])}" aria-label="Until">
+            <div id="ax_guest" class="guest-fields"${guest ? '' : ' hidden'}>
+                <div class="access-row">
+                    <div><label class="field-label" for="ax_from">From <span class="hint">(empty: straight away)</span></label>
+                        <input id="ax_from" type="datetime-local" value="${escapeAttr(rules.valid_from || '')}"></div>
+                    <div><label class="field-label" for="ax_until">Until</label>
+                        <input id="ax_until" type="datetime-local" value="${escapeAttr(rules.valid_until || '')}"></div>
+                </div>
+                <div class="quick">Until the end of
+                    <button type="button" class="quick-btn" data-days="1">today</button>
+                    <button type="button" class="quick-btn" data-days="3">day 3</button>
+                    <button type="button" class="quick-btn" data-days="7">day 7</button>
+                </div>
+                <label class="field-label" for="ax_uses">Uses <span class="hint">(empty: as many as needed)</span></label>
+                <input id="ax_uses" type="number" min="1" max="1000" step="1" placeholder="as many as needed" value="${rules.uses || ''}">
+                <div class="hint">One use is one visit: openings within 15 minutes count once (barrier, then door).
+                    The guest is switched off when the end date passes or the uses run out.</div>
             </div>
-            <label class="one-time"><input id="ax_once" type="checkbox"${rules.one_time ? ' checked' : ''}>
-                One-time PIN: deactivated after the first opening</label>
-            <div class="hint">Times are the door's local time.</div>
-        </details>`;
+            <div class="field-label">When <span class="hint">(no time windows: any time)</span></div>
+            <div id="ax_rows"></div>
+            <button type="button" id="ax_add_row" class="refresh-btn add-row">＋ Add a time window</button>
+            <div class="hint">Times are the door's local time. 22:00 to 06:00 runs overnight.</div>
+        </div>`;
+}
+
+function scheduleRow(row) {
+    const days = row.days || [0, 1, 2, 3, 4, 5, 6];
+    const hours = row.hours || ['', ''];
+    const boxes = DAY_NAMES.map((name, i) =>
+        `<label><input type="checkbox" value="${i}"${days.includes(i) ? ' checked' : ''}>${name}</label>`).join('');
+    const el = document.createElement('div');
+    el.className = 'sched-row';
+    el.innerHTML = `
+        <div class="days">${boxes}</div>
+        <div class="hours">
+            <input class="h-from" type="time" value="${escapeAttr(hours[0])}" aria-label="From">
+            <span>to</span>
+            <input class="h-until" type="time" value="${escapeAttr(hours[1])}" aria-label="Until">
+            <span class="hint">(empty: all day)</span>
+            <button type="button" class="row-remove" aria-label="Remove this time window">✕</button>
+        </div>`;
+    el.querySelector('.row-remove').addEventListener('click', () => el.remove());
+    return el;
+}
+
+function bindAccessFields(card, rules) {
+    const rows = card.querySelector('#ax_rows');
+    ((rules && rules.schedule) || []).forEach(row => rows.appendChild(scheduleRow(row)));
+    card.querySelector('#ax_add_row').addEventListener('click', () => rows.appendChild(scheduleRow({})));
+    const guestFields = card.querySelector('#ax_guest');
+    card.querySelectorAll('input[name="ax_kind"]').forEach(radio =>
+        radio.addEventListener('change', () => { guestFields.hidden = !card.querySelector('input[value="guest"]').checked; }));
+    card.querySelectorAll('.quick-btn').forEach(btn => btn.addEventListener('click', () => {
+        const end = new Date();
+        end.setDate(end.getDate() + Number(btn.dataset.days) - 1);
+        const pad = (n) => String(n).padStart(2, '0');
+        card.querySelector('#ax_until').value =
+            `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T23:59`;
+    }));
 }
 
 function readAccess(card) {
-    const value = (id) => card.querySelector('#' + id).value;
-    const days = [...card.querySelectorAll('#ax_days input:checked')].map((box) => Number(box.value));
-    const from = value('ax_hours_from');
-    const until = value('ax_hours_until');
-    if (!days.length) { showToast('Pick at least one day', 'error'); throw new Error('v'); }
-    if (!from !== !until) { showToast('Set both hours, or neither', 'error'); throw new Error('v'); }
-    const rules = {
-        valid_from: value('ax_from') || null,
-        valid_until: value('ax_until') || null,
-        days: days.length === 7 ? null : days,
-        hours: from ? [from, until] : null,
-        one_time: card.querySelector('#ax_once').checked,
-    };
-    return Object.values(rules).some(Boolean) ? rules : null;
+    const value = (id) => card.querySelector('#' + id).value.trim();
+    const fail = (message) => { showToast(message, 'error'); throw new Error('v'); };
+    const schedule = [...card.querySelectorAll('.sched-row')].map(row => {
+        const days = [...row.querySelectorAll('.days input:checked')].map(box => Number(box.value));
+        const from = row.querySelector('.h-from').value;
+        const until = row.querySelector('.h-until').value;
+        if (!days.length) fail('Pick at least one day in each time window');
+        if (!from !== !until) fail('Set both hours of a time window, or neither');
+        return { days: days.length === 7 ? null : days, hours: from ? [from, until] : null };
+    });
+    const rules = { valid_from: null, valid_until: null, uses: null, schedule: schedule.length ? schedule : null };
+    if (card.querySelector('input[name="ax_kind"]:checked').value === 'guest') {
+        if (!value('ax_until')) fail('A guest needs an end date');
+        rules.valid_from = value('ax_from') || null;
+        rules.valid_until = value('ax_until');
+        if (value('ax_uses')) {
+            const uses = Number(value('ax_uses'));
+            if (!Number.isInteger(uses) || uses < 1 || uses > 1000) fail('Uses must be a whole number from 1 to 1000');
+            rules.uses = uses;
+        }
+    }
+    return Object.values(rules).some(v => v !== null) ? rules : null;
 }
 
-function describeAccess(rules) {
-    if (!rules) return 'Always';
+function describeDays(days) {
+    if (!days) return 'every day';
+    // Runs of three or more days read as a range: Mon–Fri.
+    const parts = [];
+    for (let i = 0; i < days.length; i++) {
+        let j = i;
+        while (j + 1 < days.length && days[j + 1] === days[j] + 1) j++;
+        if (j - i >= 2) parts.push(DAY_NAMES[days[i]] + '–' + DAY_NAMES[days[j]]);
+        else for (let k = i; k <= j; k++) parts.push(DAY_NAMES[days[k]]);
+        i = j;
+    }
+    return parts.join(' ');
+}
+
+function describeAccess(rules, user) {
     const when = (s) => new Date(s).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
     const parts = [];
-    if (rules.valid_from) parts.push('from ' + when(rules.valid_from));
-    if (rules.valid_until) parts.push('until ' + when(rules.valid_until));
-    if (rules.days) parts.push(rules.days.map((d) => DAY_NAMES[d]).join(' '));
-    if (rules.hours) parts.push(rules.hours.join('-'));
-    if (rules.one_time) parts.push('one-time');
-    if (rules.valid_until && new Date(rules.valid_until) < new Date()) parts.push('(expired)');
+    if (rules && rules.valid_until) {
+        parts.push('Guest' + (rules.valid_from ? ' from ' + when(rules.valid_from) : '') + ' until ' + when(rules.valid_until));
+        if (rules.uses) parts.push(`${Math.min((user && user.visits) || 0, rules.uses)} of ${rules.uses} uses`);
+    } else {
+        parts.push('Full-time');
+    }
+    ((rules && rules.schedule) || []).forEach(row =>
+        parts.push(describeDays(row.days) + ' ' + (row.hours ? row.hours.join('–') : 'all day')));
     return parts.join(' · ');
 }
 

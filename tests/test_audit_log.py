@@ -83,3 +83,56 @@ def test_admin_clear_endpoint_keeps_logging(client):
     assert r.status_code == 200
     assert app_module.audit_log.tail()[-1]["status"] == "ADMIN_LOGS_CLEAR"  # its own entry survived
     assert client.post("/admin/logs/clear", json={"mode": "bogus"}).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# A circular log: 180 days at most, and a size cap
+# ---------------------------------------------------------------------------
+def _entry(when, status="SUCCESS"):
+    import json
+    return json.dumps({"timestamp": when.isoformat(), "ip": "ip", "session": "s", "user": "u",
+                       "status": status, "details": "d"}) + "\n"
+
+
+def test_entries_older_than_180_days_are_dropped(tmp_path):
+    from datetime import timedelta
+    from config import get_current_time
+    path = tmp_path / "log.txt"
+    now = get_current_time()
+    path.write_text(_entry(now - timedelta(days=181), "OLD") + _entry(now - timedelta(days=179), "KEPT"))
+    log = AuditLog(str(path))
+    assert _statuses(log) == ["KEPT"]
+    log.record("ip", "s", "u", "NEW", "d")
+    assert _statuses(log) == ["KEPT", "NEW"]
+
+
+def test_a_full_log_drops_its_oldest_entries(tmp_path):
+    log = AuditLog(str(tmp_path / "log.txt"), max_bytes=20_000)
+    for i in range(400):
+        log.record("ip", "s", "u", f"S{i}", "d")
+    assert (tmp_path / "log.txt").stat().st_size <= 20_000
+    statuses = [e["status"] for e in log.tail(limit=1000)]
+    assert statuses[-1] == "S399" and statuses[0] != "S0"
+    assert statuses == [f"S{i}" for i in range(400 - len(statuses), 400)]  # oldest gone, nothing skipped
+
+
+def test_rotated_logs_from_before_3_0_are_folded_back_in(tmp_path):
+    from config import get_current_time
+    path = tmp_path / "log.txt"
+    now = get_current_time()
+    (tmp_path / "log.txt.2").write_text("2026-11-01 10:00:00,000 - " + _entry(now, "OLDEST"))
+    (tmp_path / "log.txt.1").write_text(_entry(now, "OLDER"))
+    path.write_text(_entry(now, "NEWEST"))
+    log = AuditLog(str(path))
+    assert _statuses(log) == ["OLDEST", "OLDER", "NEWEST"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["log.txt"]
+
+
+def test_trimming_keeps_the_logs_permissions(tmp_path):
+    import os
+    path = tmp_path / "log.txt"
+    path.write_text("garbage\n")
+    os.chmod(path, 0o644)
+    AuditLog(str(path))  # drops the garbage line, rewriting the file
+    assert path.read_text() == ""
+    assert path.stat().st_mode & 0o777 == 0o644

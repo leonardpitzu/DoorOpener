@@ -1,12 +1,16 @@
 {
-    "entity_id": "switch.dooropener_zigbee",
-    "battery_entity": "sensor.dooropener_zigbee_battery",
+    "doors": [
+        {"name": "Barrier", "id": "barrier", "entity_id": "cover.parking_barrier", "icon": "barrier"},
+        {"name": "Door", "id": "door", "entity_id": "switch.dooropener_zigbee",
+         "battery_entity": "sensor.dooropener_zigbee_battery"}
+    ],
     "settings": {
         "ssl": false,
         "certfile": "fullchain.pem",
         "keyfile": "privkey.pem",
         "trusted_proxies": 0,
         "admin_password": "change_me_please",
+        "report_to_ha": true,
         "max_attempts": 5,
         "session_max_attempts": 3,
         "block_time_minutes": 5,

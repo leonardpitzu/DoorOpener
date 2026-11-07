@@ -42,7 +42,7 @@
         {% if test_mode %}
         <div style="border-radius:12px;max-width:700px;margin:0 auto 1.5rem;padding:1rem 1.5rem;border:2px solid #ffb300;background:rgba(255,179,0,0.12);text-align:center;">
             <strong style="color:#ffb300;">&#9888; TEST MODE ENABLED</strong>
-            <div style="color:rgba(0,0,0,0.7);margin-top:0.4rem;font-size:0.95em;">The door will <b>not</b> actually open. Disable <code>test_mode</code> in <code>options.json</code> before production use.</div>
+            <div style="color:rgba(0,0,0,0.7);margin-top:0.4rem;font-size:0.95em;">No door will <b>actually</b> open. Disable <code>test_mode</code> in <code>options.json</code> before production use.</div>
         </div>
         {% endif %}
 
@@ -133,9 +133,9 @@
                         <thead>
                             <tr>
                                 <th>Username</th>
-                                <th>Active</th>
+                                <th>Enabled</th>
+                                <th>Doors</th>
                                 <th>Access</th>
-                                <th>Source</th>
                                 <th>Created</th>
                                 <th>Last Used</th>
                                 <th>Times Used</th>

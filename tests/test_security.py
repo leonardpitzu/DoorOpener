@@ -102,12 +102,12 @@ def test_admin_auth_success(_client, app_module, monkeypatch):
 
 
 def test_testmode_pin_success(_client, app_module):
-    app_module.users_store.create_user("alice", "1234")
+    app_module.users_store.create_user("alice", "1234", doors=["door"])
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
     )
     assert r.status_code == 200
-    assert "TEST MODE" in r.get_json().get("message", "")
+    assert "test mode" in r.get_json().get("message", "")
 
 
 def test_admin_logout_endpoint(_client):
@@ -143,66 +143,33 @@ def test_battery_exception_returns_none(_client, app_module):
         assert response.get_json()["level"] is None
 
 
-def test_open_door_success_switch(_client, app_module, monkeypatch):
+@pytest.mark.parametrize("entity, service", [
+    ("switch.test_door", "switch/turn_on"),
+    ("lock.test_door", "lock/unlock"),
+    ("input_boolean.open", "input_boolean/turn_on"),
+    ("button.gate_open", "button/press"),
+    ("cover.barrier", "cover/open_cover"),
+    ("script.open_gate", "script/turn_on"),
+])
+def test_each_kind_of_entity_opens_with_its_own_service(_client, app_module, monkeypatch, entity, service):
     import config
-    app_module.users_store.create_user("alice", "1234")
-    monkeypatch.setattr(config, "entity_id", "switch.test_door")
+    door = config.Door("door", "Door", entity)
+    monkeypatch.setattr(config, "doors", (door,))
+    monkeypatch.setattr(config, "_doors_by_id", {"door": door})
     monkeypatch.setattr(config, "test_mode", False)
+    monkeypatch.setattr(config, "report_to_ha", False)
+    app_module.users_store.create_user("alice", "1234", doors=["door"])
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.raise_for_status = lambda: None
-    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp):
+    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp) as post:
         r = _client.post(
             "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
         )
         assert r.status_code == 200
-        msg = r.get_json().get("message", "")
-        assert "Door open" in msg
-
-
-def test_open_door_success_lock(_client, app_module, monkeypatch):
-    import config
-    app_module.users_store.create_user("alice", "1234")
-    monkeypatch.setattr(config, "entity_id", "lock.test_door")
-    monkeypatch.setattr(config, "test_mode", False)
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = lambda: None
-    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp):
-        r = _client.post(
-            "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
-        )
-        assert r.status_code == 200
-
-
-def test_open_door_success_input_boolean(_client, app_module, monkeypatch):
-    import config
-    app_module.users_store.create_user("alice", "1234")
-    monkeypatch.setattr(config, "entity_id", "input_boolean.open")
-    monkeypatch.setattr(config, "test_mode", False)
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = lambda: None
-    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp):
-        r = _client.post(
-            "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
-        )
-        assert r.status_code == 200
-
-
-def test_open_door_success_button(_client, app_module, monkeypatch):
-    import config
-    app_module.users_store.create_user("alice", "1234")
-    monkeypatch.setattr(config, "entity_id", "button.gate_open")
-    monkeypatch.setattr(config, "test_mode", False)
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = lambda: None
-    with patch.object(app_module.ha_client.session, "post", return_value=mock_resp):
-        r = _client.post(
-            "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()
-        )
-        assert r.status_code == 200
+        assert r.get_json()["message"] == "Door is opening"
+        assert post.call_args.args[0].endswith(f"/api/services/{service}")
+        assert post.call_args.kwargs["json"] == {"entity_id": entity}
 
 
 def test_battery_invalid_format(_client, app_module):
@@ -229,7 +196,7 @@ def test_admin_logs_parsing(_client, app_module):
 
 
 def test_blocked_denies_correct_pin_and_returns_blocked_until(_client, app_module):
-    app_module.users_store.create_user("alice", "1234")
+    app_module.users_store.create_user("alice", "1234", doors=["door"])
     _block(app_module.rate_limiter.pin_session, _session_id(_client))
     r = _client.post(
         "/open-door", data=json.dumps({"pin": "1234"}), headers=_std_headers()

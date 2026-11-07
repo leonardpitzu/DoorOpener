@@ -102,7 +102,7 @@ def test_csrf_on_admin_logout(csrf_client):
 def test_csrf_on_delete(csrf_client):
     """DELETE also requires CSRF."""
     import app as app_module
-    app_module.users_store.create_user("delme", "9999")
+    app_module.users_store.create_user("delme", "9999", doors=["door"])
     _admin_session_with_csrf(csrf_client, csrf_token="del-tok")
 
     # Without token
@@ -120,7 +120,7 @@ def test_csrf_on_delete(csrf_client):
 def test_csrf_on_put(csrf_client):
     """PUT also requires CSRF."""
     import app as app_module
-    app_module.users_store.create_user("editme", "1111")
+    app_module.users_store.create_user("editme", "1111", doors=["door"])
     _admin_session_with_csrf(csrf_client, csrf_token="put-tok")
 
     r = csrf_client.put(

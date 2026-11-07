@@ -13,8 +13,8 @@ import config
 @pytest.fixture
 def app_module():
     import app as app_module
-    app_module.users_store.create_user("alice", "1357")
-    app_module.users_store.create_user("bob", "2468", active=False)
+    app_module.users_store.create_user("alice", "1357", doors=["door"])
+    app_module.users_store.create_user("bob", "2468", active=False, doors=["door"])
     return app_module
 
 
@@ -112,13 +112,13 @@ def test_home_assistant_failures_reach_the_audit_log(app_module, monkeypatch):
     assert r.status_code == 502
     entry = app_module.audit_log.tail()[-1]
     assert entry["status"] == "FAILURE" and entry["user"] == "alice"
-    assert entry["details"] == "Home Assistant unreachable (ConnectionError)"  # no URL leaked
+    assert entry["details"] == "Door: Home Assistant unreachable (ConnectionError)"  # no URL leaked
 
     denied = MagicMock(status_code=401)
     denied.raise_for_status.side_effect = requests.HTTPError(response=denied)
     with patch.object(app_module.ha_client.session, "post", return_value=denied):
         _try(_fresh_client(app_module), "1357")
-    assert app_module.audit_log.tail()[-1]["details"] == "Home Assistant API error: 401"
+    assert app_module.audit_log.tail()[-1]["details"] == "Door: Home Assistant API error: 401"
 
 
 def test_a_failed_notification_never_raises(app_module, caplog):

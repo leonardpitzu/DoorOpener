@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""DoorOpener: a PIN keypad that opens a door through Home Assistant.
+"""DoorOpener: a PIN keypad that opens doors through Home Assistant.
 
 This module holds the routes and the request plumbing. The rest lives next door:
-settings in ``config``, brute-force protection in ``security``, PIN rules in
-``pins``, when a PIN works in ``access``, users in ``users_store``, the audit
-trail in ``audit``, the Home Assistant calls in ``ha_client`` and the admin panel
-inside Home Assistant in ``ingress``.
+settings and the doors in ``config``, brute-force protection in ``security``, PIN
+rules in ``pins``, when a PIN works in ``access``, users in ``users_store``, the
+pass between a PIN and the door picked in ``passes``, recognising a user's phone
+in ``phones``, the audit trail in ``audit``, the Home Assistant calls in
+``ha_client`` and the admin panel inside Home Assistant in ``ingress``.
 
 The admin panel answers in two places. Through ingress, Home Assistant has
 already logged the user in, so a Home Assistant administrator gets straight in
@@ -17,6 +18,7 @@ import atexit
 import gzip
 import hashlib
 import hmac
+import json
 import logging
 import math
 import os
@@ -25,15 +27,22 @@ import threading
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, jsonify, render_template, request, send_from_directory, session, url_for
+from flask import (
+    Flask, Response, abort, jsonify, make_response, render_template, request, send_from_directory, session, url_for,
+)
 from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import InternalServerError, RequestEntityTooLarge
 
+import access
 import config
 import ingress
 from audit import AuditLog
 from config import get_current_time
 from ha_client import HAClient, HAError
+from passes import Passes
+from phones import COOKIE as PHONE_COOKIE
+from phones import MAX_AGE as PHONE_COOKIE_MAX_AGE
+from phones import KnownPhones
 from pins import DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, generate_pin, is_valid_pin, secure_equals
 from security import LocalProxyFix, RateLimiter, add_security_headers, client_identity
 from users_store import KEEP, InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
@@ -88,9 +97,21 @@ rate_limiter = RateLimiter()
 ha_client = HAClient()
 users_store = UsersStore(USERS_STORE_PATH)
 audit_log = AuditLog(os.path.join(LOG_DIR, "log.txt"))
+passes = Passes()
+known_phones = KnownPhones(app.secret_key)
 
 # Persist any coalesced usage counters on shutdown (record_use batches writes).
 atexit.register(users_store.flush_touches)
+
+if not config.doors:
+    logger.warning("No doors configured: the keypad answers but opens nothing. Add one on the configuration page.")
+else:
+    # Users from before 3.0 had the one door; it is the first in the list now.
+    try:
+        if users_store.adopt_doors([config.doors[0].id]):
+            logger.info("Users from an earlier version may open %s, the first door", config.doors[0].name)
+    except UsersStoreError as e:
+        logger.error("User store unavailable: %s", e)
 
 if config.random_secret_warning:
     logger.warning("No secret_key configured: using a random one, so logins end at every restart.")
@@ -331,16 +352,61 @@ def _audit_admin(status: str, details: str) -> None:
 # ---------------------------------------------------------------------------
 # Keypad
 # ---------------------------------------------------------------------------
+# The PIN is right, but this user may open none of the doors asked for.
+NOT_ALLOWED = "NOT_ALLOWED"
+
+
 @app.route("/")
 def index():
     if _visitor() is not None:  # Home Assistant opens straight onto the admin panel
         return admin()
+    return _keypad(())
+
+
+@app.route("/<shortcut>")
+def shortcut(shortcut: str):
+    """A link straight to some doors, the same for everyone: /barrier, /barrier+door.
+
+    The PIN still decides: of these doors, the ones it may open. One opens at once.
+    """
+    if _visitor() is not None:
+        return admin()
+    targets = _shortcut_doors(shortcut)
+    if not targets:
+        abort(404)
+    return _keypad(targets)
+
+
+def _shortcut_doors(text: str) -> tuple[config.Door, ...] | None:
+    """The doors a shortcut names, in the configuration's order; None if it names one that is not there."""
+    ids = text.split("+")
+    if any(config.door(door_id) is None for door_id in ids):
+        return None
+    return tuple(door for door in config.doors if door.id in ids)
+
+
+def _keypad(targets: tuple[config.Door, ...]):
+    shown = targets or config.doors
+    # A page for one door shows that door's battery; with several, the tiles do.
+    battery_door = shown[0].id if len(shown) == 1 and shown[0].battery_entity else ""
     return render_template(
         "index.html",
         csrf_token=_csrf_token(),
-        battery_enabled=bool(config.battery_entity),
         public_admin=config.public_admin,
+        targets=targets,
+        shortcut="+".join(door.id for door in targets),
+        title=_names(targets, " & ") if targets else "DoorOpener",
+        battery_door=battery_door,
+        no_doors=not config.doors,
     )
+
+
+def _names(doors, joiner: str = " or ") -> str:
+    return joiner.join(door.name for door in doors)
+
+
+def _door_json(door: config.Door) -> dict:
+    return {"id": door.id, "name": door.name, "icon": door.icon, "battery": bool(door.battery_entity)}
 
 
 @app.route("/service-worker.js")
@@ -348,9 +414,26 @@ def service_worker():
     return send_from_directory(app.static_folder, "service-worker.js", mimetype="application/javascript")
 
 
+with open(os.path.join(app.static_folder, "manifest.webmanifest"), encoding="utf-8") as _manifest_file:
+    _MANIFEST = json.load(_manifest_file)
+
+
 @app.route("/manifest.webmanifest")
 def manifest_file():
-    return send_from_directory(app.static_folder, "manifest.webmanifest", mimetype="application/manifest+json")
+    """The keypad's web app manifest. A shortcut page gets one of its own (?to=barrier),
+    so it can sit on the home screen as an icon of its own, named after its doors."""
+    manifest = dict(_MANIFEST)
+    if request.args.get("to"):
+        targets = _shortcut_doors(request.args["to"])
+        if not targets:
+            return _error("No such door", 404)
+        link = "/" + "+".join(door.id for door in targets)
+        name = _names(targets, " & ")
+        manifest.update(id=link, start_url=link, name=name, short_name=name)
+    elif len(config.doors) > 1:
+        # A long press on the app icon offers each door (Android).
+        manifest["shortcuts"] = [{"name": door.name, "url": "/" + door.id} for door in config.doors]
+    return Response(json.dumps(manifest), mimetype="application/manifest+json")
 
 
 @app.route("/health")
@@ -361,13 +444,21 @@ def health():
 
 @app.route("/battery")
 def battery():
-    # get_battery_level() caches for 60s and returns None without a battery entity.
-    return jsonify({"level": ha_client.get_battery_level()})
+    """A door's battery level (?door=barrier), or the only door's. Cached for 60s; None without a sensor."""
+    door_id = request.args.get("door")
+    door = config.door(door_id) if door_id else (config.doors[0] if len(config.doors) == 1 else None)
+    return jsonify({"level": ha_client.get_battery_level(door.battery_entity) if door else None})
 
 
 @app.route("/open-door", methods=["POST"])
 @csrf_protected
 def open_door():
+    """A PIN, and from a shortcut page the doors it names.
+
+    Of those doors (all of them from the main link), the ones this user may open:
+    one opens at once; several come back as a choice, with a pass for the tile the
+    user taps (see open_chosen_door).
+    """
     ip, session_id = client_identity()
 
     blocked_until = rate_limiter.pin_blocked_until(ip, session_id)
@@ -375,31 +466,155 @@ def open_door():
         audit_log.record(ip, session_id, "UNKNOWN", "BLOCKED", f"Blocked for {_minutes_until(blocked_until)} more min")
         return _blocked(blocked_until)
 
-    pin = _json_body().get("pin")
+    body = _json_body()
+    pin = body.get("pin")
     if pin is None:
         return _error("PIN required", 400)
+    targets = _requested_doors(body.get("doors"))
+    if targets is None:
+        return _error("Unknown door", 400)
     if not is_valid_pin(pin):
         return _wrong_pin(ip, session_id, "INVALID_FORMAT", "Invalid PIN format", 400)
 
-    user, refusal = users_store.authorize(pin, get_current_time())
+    now = get_current_time()
+    _retire_finished_guests(now)
+    user, refusal = users_store.authorize(pin, now)
+    doors: tuple[config.Door, ...] = ()
+    if refusal is None:
+        doors = _doors_for(user, targets)
+        if not doors:
+            refusal = NOT_ALLOWED
     if refusal:
-        # A disabled PIN, or one outside its access rules, is answered and counted
-        # like any wrong PIN: anything else would let a stranger test, unthrottled,
-        # which PINs exist. Only the audit log says whose it was and why.
-        return _wrong_pin(ip, session_id, refusal, "Invalid PIN", 401, user=user or "UNKNOWN")
+        return _refuse(ip, session_id, user, refusal, targets, now)
 
     rate_limiter.pin_succeeded(ip, session_id)
-    return _open_door_for(user, ip, session_id)
+    if len(doors) == 1:
+        response = make_response(_open(doors[0], user, ip, session_id))
+    else:
+        response = jsonify({
+            "status": "choose",
+            "pass": passes.issue(user, [door.id for door in doors], session_id),
+            "expires_in": passes.ttl,
+            "doors": [_door_json(door) for door in doors],
+        })
+    _remember_phone(response, user)
+    return response
 
 
-def _wrong_pin(ip: str, session_id: str, status: str, message: str, code: int, user: str = "UNKNOWN"):
+@app.route("/open-door/choice", methods=["POST"])
+@csrf_protected
+def open_chosen_door():
+    """The tile the user tapped, with the pass their PIN earned a moment ago."""
+    ip, session_id = client_identity()
+    body = _json_body()
+    door = config.door(str(body.get("door") or ""))
+    user = passes.redeem(str(body.get("pass") or ""), door.id if door else "", session_id)
+    if user is None or door is None:
+        return _error("Too late: enter the PIN again.", 410)
+    return _open(door, user, ip, session_id)
+
+
+def _requested_doors(raw) -> tuple[config.Door, ...] | None:
+    """The doors a shortcut page sent: () for none (the main link), None for an unknown one."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(door_id, str) for door_id in raw):
+        return None
+    return _shortcut_doors("+".join(raw))
+
+
+def _doors_for(user: str, targets: tuple[config.Door, ...]) -> tuple[config.Door, ...]:
+    allowed = set(users_store.profile(user)["doors"])
+    return tuple(door for door in (targets or config.doors) if door.id in allowed)
+
+
+def _refuse(ip: str, session_id: str, user: str | None, reason: str, targets, now: datetime):
+    """Answer a refused PIN: like any wrong PIN, unless its owner's phone asks.
+
+    A PIN refused for its schedule, its dates, its uses or its door is still a
+    PIN that exists, and a stranger must not learn that. A phone that has opened
+    with this same user's PIN before gets the plain reason instead, and the try
+    does not count against it.
+    """
+    where = f" ({_names(targets)})" if targets else ""
+    if user is not None and not config.test_mode:
+        _in_background(ha_client.access_refused, user, reason, [door.id for door in targets])
+    if user is not None and _phone_knows(user):
+        message = _plain_refusal(user, reason, targets, now)
+        audit_log.record(ip, session_id, user, reason, f"{message} (told to a phone that opened before){where}")
+        return jsonify({"status": "refused", "message": message}), 403
+    return _wrong_pin(ip, session_id, reason, "Invalid PIN", 401, user=user or "UNKNOWN",
+                      details="Invalid PIN" + where)
+
+
+def _plain_refusal(user: str, reason: str, targets, now: datetime) -> str:
+    rules = users_store.profile(user)["access"] or {}
+    if reason == access.OUTSIDE_SCHEDULE:
+        upcoming = access.next_window(rules, now)
+        return f"Not now. You can open again {_when(upcoming, now)}." if upcoming else \
+            "Not now, and this PIN has no times left to open."
+    if reason == access.NOT_YET_VALID:
+        return f"Not yet. This PIN works from {_when(datetime.fromisoformat(rules['valid_from']), now)}."
+    if reason == access.EXPIRED:
+        until = rules.get("valid_until")
+        return f"This PIN expired on {_date(datetime.fromisoformat(until))}." if until else "This PIN has expired."
+    if reason == access.USED_UP:
+        return "This PIN has been used up."
+    if reason == NOT_ALLOWED:
+        return f"This PIN can't open {_names(targets)}." if targets else "This PIN can't open any door yet."
+    return "This PIN is switched off."
+
+
+def _when(moment: datetime, now: datetime) -> str:
+    """'today at 13:00', 'tomorrow at 07:00', 'on Monday at 07:00', or a date further out."""
+    days = (moment.date() - now.replace(tzinfo=None).date()).days
+    at = moment.strftime("%H:%M")
+    if days == 0:
+        return f"today at {at}"
+    if days == 1:
+        return f"tomorrow at {at}"
+    if 1 < days < 7:
+        return f"on {moment.strftime('%A')} at {at}"
+    return f"on {_date(moment)} at {at}"
+
+
+def _date(moment: datetime) -> str:
+    return f"{moment.strftime('%a')} {moment.day} {moment.strftime('%b')}"
+
+
+def _phone_knows(user: str) -> bool:
+    return known_phones.knows(request.cookies.get(PHONE_COOKIE), user, users_store.profile(user)["phone_key"])
+
+
+def _remember_phone(response, user: str) -> None:
+    key = users_store.profile(user)["phone_key"]
+    if key:
+        response.set_cookie(PHONE_COOKIE, known_phones.remember(request.cookies.get(PHONE_COOKIE), user, key),
+                            max_age=PHONE_COOKIE_MAX_AGE, httponly=True, samesite="Lax",
+                            secure=request.is_secure, path="/")
+
+
+def _retire_finished_guests(now: datetime) -> None:
+    """Switch off the guests whose end date passed or whose uses ran out, and log it."""
+    try:
+        finished = users_store.retire(now)
+    except UsersStoreError:
+        return  # the request that follows reports it
+    for user, reason in finished:
+        why = "end date passed" if reason == access.EXPIRED else "all uses used"
+        audit_log.record("DoorOpener", None, user, "SWITCHED_OFF", f"Guest switched off: {why}")
+
+
+def _wrong_pin(ip: str, session_id: str, status: str, message: str, code: int, user: str = "UNKNOWN",
+               details: str | None = None):
+    details = details or message
     blocked_until = rate_limiter.pin_failed(ip, session_id)
     _count_failure(ip, session_id)
     if not blocked_until:
-        audit_log.record(ip, session_id, user, status, message)
+        audit_log.record(ip, session_id, user, status, details)
         return _error(message, code)
     minutes = _minutes_until(blocked_until)
-    audit_log.record(ip, session_id, user, status, f"{message}; blocked for {minutes} min")
+    audit_log.record(ip, session_id, user, status, f"{details}; blocked for {minutes} min")
     return _error(
         f"{message}. Too many failed attempts: try again in {minutes} min.",
         code,
@@ -407,34 +622,33 @@ def _wrong_pin(ip: str, session_id: str, status: str, message: str, code: int, u
     )
 
 
-def _open_door_for(user: str, ip: str, session_id: str):
-    suffix = " (TEST MODE)" if config.test_mode else ""
+def _open(door: config.Door, user: str, ip: str, session_id: str):
+    test = " (TEST MODE)" if config.test_mode else ""
     if not config.test_mode:
         try:
-            ha_client.open_door()
+            ha_client.open_door(door)
         except HAError as e:
             # A valid PIN that did not open the door belongs in the audit trail.
-            logger.error("Opening the door failed: %s", e)
-            audit_log.record(ip, session_id, user, "FAILURE", str(e))
+            logger.error("Opening %s failed: %s", door.name, e)
+            audit_log.record(ip, session_id, user, "FAILURE", f"{door.name}: {e}")
             return _error("Failed to contact Home Assistant", 502)
-    used_up = _record_use(user)
-    audit_log.record(ip, session_id, user, "SUCCESS",
-                     f"Door opened{suffix}" + ("; one-time PIN used up" if used_up else ""))
+    note = _record_use(user)
+    audit_log.record(ip, session_id, user, "SUCCESS", f"{door.name} opened{test}" + (f"; {note}" if note else ""))
     if not config.test_mode:
-        _in_background(ha_client.door_opened, user)
-    return jsonify({
-        "status": "success",
-        "message": f"Door open command sent{suffix}.\nWelcome home, {user.capitalize()}!",
-    })
+        _in_background(ha_client.door_opened, user, door)
+    # No name: the phone greets by the time of day, and a PIN seen over a shoulder
+    # does not also say whose it is.
+    return jsonify({"status": "success", "door": door.id,
+                    "message": f"{door.name} is opening" + (" (test mode)" if config.test_mode else "")})
 
 
-def _record_use(username: str) -> bool:
-    """Count a use; True if it used up a one-time PIN. Never fails a door that already opened."""
+def _record_use(username: str) -> str | None:
+    """Count a use; returns what to note in the log. Never fails a door that already opened."""
     try:
-        return users_store.record_use(username)
+        return users_store.record_use(username, get_current_time())
     except Exception as e:
         logger.warning("Could not record a use for %s: %s", username, e)
-        return False
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +755,21 @@ def admin_logs_clear():
 @app.route("/admin/users")
 @require_admin
 def admin_users_list():
-    return jsonify({"users": [{**user, "can_edit": True} for user in users_store.list_users()["users"]]})
+    _retire_finished_guests(get_current_time())
+    return jsonify({
+        "users": [{**user, "can_edit": True} for user in users_store.list_users()["users"]],
+        "doors": [_door_json(door) for door in config.doors],
+    })
+
+
+def _door_ids(raw) -> list[str]:
+    """The doors an admin ticked for a user; each must be a configured door."""
+    if not isinstance(raw, list) or not all(isinstance(door_id, str) for door_id in raw):
+        raise InvalidUser("doors must be a list of door ids")
+    unknown = [door_id for door_id in raw if config.door(door_id) is None]
+    if unknown:
+        raise InvalidUser("No such door: " + ", ".join(unknown))
+    return raw
 
 
 @app.route("/admin/users", methods=["POST"])
@@ -552,7 +780,8 @@ def admin_users_create():
     username, pin = body.get("username"), body.get("pin")
     if not username or not pin:
         return _error("username and pin are required", 400)
-    users_store.create_user(username, pin, bool(body.get("active", True)), body.get("access"))
+    users_store.create_user(username, pin, bool(body.get("active", True)), body.get("access"),
+                            doors=_door_ids(body.get("doors", [])))
     _audit_admin("ADMIN_USER_CREATE", f"username={username}")
     return jsonify({"status": "created"}), 201
 
@@ -563,7 +792,9 @@ def admin_users_create():
 def admin_users_update(username: str):
     body = _json_body()
     users_store.update_user(username, pin=body.get("pin"), active=body.get("active"),
-                            access_rules=body.get("access", KEEP))
+                            access_rules=body.get("access", KEEP),
+                            doors=_door_ids(body["doors"]) if "doors" in body else KEEP,
+                            now=get_current_time())
     _audit_admin("ADMIN_USER_UPDATE", f"username={username}")
     return jsonify({"status": "updated"})
 

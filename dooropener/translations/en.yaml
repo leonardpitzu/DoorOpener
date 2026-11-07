@@ -1,14 +1,32 @@
 configuration:
-  entity_id:
-    name: Door entity
+  doors:
+    name: Doors
     description: >-
-      The switch, lock, input_boolean or button that opens the door, for
-      example button.intercom_open.
-  battery_entity:
-    name: Battery sensor (optional)
-    description: >-
-      A sensor with the opener's battery level in %, shown on the keypad. Leave
-      empty if it has none.
+      What the keypad opens: a door, a barrier, a gate, a garage door. In the
+      admin panel you tick, for each user, the doors they may open; a door you
+      add later is opened by nobody until you tick it.
+    fields:
+      name:
+        name: Name
+        description: Shown on the keypad, for example Barrier or Front door.
+      id:
+        name: Link name
+        description: >-
+          Lowercase letters, digits, - and _, for example barrier. Gives the
+          door a shortcut link (https://your.domain:6532/barrier), and is how
+          users' door ticks refer to it: keep it once users have the door.
+      entity_id:
+        name: Entity
+        description: >-
+          What opens it: a switch, lock, input_boolean, button, cover (opened
+          with open_cover) or script, for example button.intercom_open.
+      battery_entity:
+        name: Battery sensor (optional)
+        description: >-
+          A sensor with the opener's battery level in %, shown on the keypad.
+      icon:
+        name: Icon (optional)
+        description: door, barrier, gate or garage. Default door.
   settings:
     name: DoorOpener settings
     description: >-
@@ -41,6 +59,14 @@ configuration:
           Leave empty to keep the admin panel inside Home Assistant only (Open
           Web UI, or Show in sidebar). Set one to also reach it from the
           keypad's gear icon.
+      report_to_ha:
+        name: Report to Home Assistant
+        description: >-
+          Send each opening, and each refusal of someone's own PIN, to Home
+          Assistant as an event (dooropener_door_opened,
+          dooropener_access_refused) and a logbook entry. Off, DoorOpener writes
+          nothing to Home Assistant's history. The brute-force alert is sent
+          either way.
       max_attempts:
         name: Wrong PINs per device
         description: Wrong PINs from one IP address before it is blocked.
@@ -62,6 +88,6 @@ configuration:
           anyone out.
       test_mode:
         name: Test mode
-        description: Go through the motions without opening the door.
+        description: Go through the motions without opening any door.
 network:
   6532/tcp: Keypad port

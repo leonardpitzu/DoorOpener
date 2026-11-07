@@ -25,17 +25,20 @@ def test_battery_route(client):
         assert response.get_json()["level"] == 85
 
 
-def test_battery_route_disabled(client):
-    """When battery_entity is empty, /battery returns null without calling HA."""
+def test_battery_route_disabled(client, monkeypatch):
+    """A door without a battery sensor gets null, without calling HA."""
+    import app as app_module
     import config
-    original = config.battery_entity
-    config.battery_entity = ""
-    try:
-        response = client.get("/battery")
+    door = config.Door("door", "Door", "switch.test_door")
+    monkeypatch.setattr(config, "doors", (door,))
+    monkeypatch.setattr(config, "_doors_by_id", {"door": door})
+    get = MagicMock()
+    monkeypatch.setattr(app_module.ha_client.session, "get", get)
+    for path in ("/battery", "/battery?door=door", "/battery?door=nope"):
+        response = client.get(path)
         assert response.status_code == 200
         assert response.get_json()["level"] is None
-    finally:
-        config.battery_entity = original
+    assert get.call_count == 0
 
 
 def test_open_door_invalid_input(client):

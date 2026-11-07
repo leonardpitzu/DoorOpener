@@ -76,7 +76,7 @@ def test_success_forgets_earlier_failures(client, monkeypatch):
     import app as app_module
 
     monkeypatch.setattr("app.client_identity", lambda: ("2.2.2.2", "sessReset"))
-    app_module.users_store.create_user("ok", "9999")
+    app_module.users_store.create_user("ok", "9999", doors=["door"])
     almost = app_module.rate_limiter.pin_session.limit - 1
 
     for _ in range(almost):
@@ -91,7 +91,7 @@ def test_correct_pin_during_a_block_is_refused_and_keeps_the_block(client, monke
     import app as app_module
 
     monkeypatch.setattr("app.client_identity", lambda: ("3.3.3.3", "sessBlock"))
-    app_module.users_store.create_user("ok2", "1357")
+    app_module.users_store.create_user("ok2", "1357", doors=["door"])
     throttle = app_module.rate_limiter.pin_session
     for _ in range(throttle.limit):
         throttle.fail("sessBlock")

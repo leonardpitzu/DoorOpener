@@ -1,7 +1,7 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -428,8 +428,12 @@ def test_pin_taken_covers_disabled_users_but_not_the_owner(users_store):
 
 
 # ---------------------------------------------------------------------------
-# Access rules and one-time PINs
+# Access rules, guests and their uses
 # ---------------------------------------------------------------------------
+UTC = timezone.utc
+FRIDAY = "2026-11-13T23:59"
+
+
 def test_access_rules_are_stored_and_listed(users_store):
     users_store.create_user("guest", "2468", access_rules={"valid_until": "2026-11-12T18:00"})
     (user,) = users_store.list_users()["users"]
@@ -438,9 +442,9 @@ def test_access_rules_are_stored_and_listed(users_store):
 
 
 def test_update_keeps_or_clears_access_rules(users_store):
-    users_store.create_user("guest", "2468", access_rules={"one_time": True})
+    users_store.create_user("guest", "2468", access_rules={"valid_until": FRIDAY, "uses": 1})
     users_store.update_user("guest", pin="1357")
-    assert users_store.list_users()["users"][0]["access"]["one_time"] is True
+    assert users_store.list_users()["users"][0]["access"]["uses"] == 1
     users_store.update_user("guest", access_rules=KEEP)
     assert users_store.list_users()["users"][0]["access"] is not None
     users_store.update_user("guest", access_rules=None)
@@ -449,19 +453,103 @@ def test_update_keeps_or_clears_access_rules(users_store):
 
 def test_invalid_access_rules_are_refused(users_store):
     with pytest.raises(InvalidUser, match="days"):
-        users_store.create_user("guest", "2468", access_rules={"days": []})
+        users_store.create_user("guest", "2468", access_rules={"schedule": [{"days": [], "hours": None}]})
+    with pytest.raises(InvalidUser, match="end date"):
+        users_store.create_user("courier", "8642", access_rules={"uses": 1})
     assert users_store.list_users()["users"] == []
 
 
-def test_a_one_time_pin_is_deactivated_by_its_use(users_store):
-    users_store.create_user("courier", "8642", access_rules={"one_time": True})
-    assert users_store.record_use("courier") is True
-    assert users_store.authorize("8642", NOW) == ("courier", DISABLED)
+def test_a_courier_gets_one_visit_then_is_switched_off(users_store):
+    users_store.create_user("courier", "8642", doors=["barrier", "door"], access_rules={
+        "valid_until": "2026-11-09T23:59", "uses": 1, "schedule": [{"days": [0], "hours": ["10:00", "13:30"]}]})
+    arrival = datetime(2026, 11, 9, 10, 5, tzinfo=UTC)
+    assert users_store.record_use("courier", arrival) == "use 1 of 1"
     # Written at once, not left for the next usage flush.
-    assert _who(UsersStore(users_store.path), "8642") is None
+    assert UsersStore(users_store.path).list_users()["users"][0]["visits"] == 1
+    later = arrival + timedelta(minutes=10)
+    assert users_store.authorize("8642", later) == ("courier", None)  # the door after the barrier
+    assert users_store.record_use("courier", later) is None           # the same visit
+    assert users_store.retire(later) == []                            # not mid-visit
+    done = arrival + timedelta(minutes=15)
+    assert users_store.authorize("8642", done) == ("courier", "USED_UP")
+    assert users_store.retire(done) == [("courier", "USED_UP")]
+    (user,) = users_store.list_users()["users"]
+    assert (user["active"], user["finished"]) == (False, "USED_UP") and user["finished_at"]
+    assert users_store.authorize("8642", done) == ("courier", "USED_UP")  # still says why
+
+
+def test_a_guest_is_switched_off_when_the_end_date_passes(users_store):
+    users_store.create_user("friend", "2468", doors=["door"], access_rules={"valid_until": "2026-11-15T23:59"})
+    assert users_store.retire(datetime(2026, 11, 15, 23, 0, tzinfo=UTC)) == []
+    assert users_store.retire(datetime(2026, 11, 16, 0, 0, tzinfo=UTC)) == [("friend", "EXPIRED")]
+    assert users_store.retire(datetime(2026, 11, 16, 0, 1, tzinfo=UTC)) == []  # once
+    assert users_store.authorize("2468", datetime(2026, 11, 16, 9, 0)) == ("friend", "EXPIRED")
+
+
+def test_an_expired_guest_comes_back_only_with_a_new_end_date(users_store):
+    users_store.create_user("friend", "2468", access_rules={"valid_until": "2026-11-15T23:59"})
+    users_store.retire(datetime(2026, 11, 16, 0, 0, tzinfo=UTC))
+    monday = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
+    with pytest.raises(InvalidUser, match="end date has passed"):
+        users_store.update_user("friend", active=True, now=monday)
+    users_store.update_user("friend", active=True, access_rules={"valid_until": "2026-11-22T23:59"}, now=monday)
+    (user,) = users_store.list_users()["users"]
+    assert (user["active"], user["finished"], user["finished_at"]) == (True, None, None)
+    assert users_store.authorize("2468", monday) == ("friend", None)
+
+
+def test_switching_a_used_up_guest_back_on_gives_their_uses_afresh(users_store):
+    users_store.create_user("courier", "8642", access_rules={"valid_until": FRIDAY, "uses": 1})
+    start = datetime(2026, 11, 9, 10, 0, tzinfo=UTC)
+    users_store.record_use("courier", start)
+    users_store.retire(start + timedelta(hours=1))
+    users_store.update_user("courier", active=True, now=start + timedelta(hours=2))
+    assert users_store.list_users()["users"][0]["visits"] == 0
+    assert users_store.authorize("8642", start + timedelta(hours=2)) == ("courier", None)
 
 
 def test_an_ordinary_pin_survives_its_use(users_store):
     users_store.create_user("alice", "1234")
-    assert users_store.record_use("alice") is False
+    assert users_store.record_use("alice") is None
     assert _who(users_store, "1234") == "alice"
+    assert users_store.retire(datetime(2027, 1, 1, tzinfo=UTC)) == []  # full-time users never finish
+
+
+# ---------------------------------------------------------------------------
+# Doors, and recognising a user's phones
+# ---------------------------------------------------------------------------
+def test_doors_are_stored_in_order_each_once(users_store):
+    users_store.create_user("alice", "1234", doors=["door", "barrier", "door"])
+    assert users_store.profile("alice")["doors"] == ["door", "barrier"]
+    users_store.update_user("alice", doors=["barrier"])
+    assert users_store.list_users()["users"][0]["doors"] == ["barrier"]
+    users_store.update_user("alice", pin="4321")  # doors kept
+    assert users_store.profile("alice")["doors"] == ["barrier"]
+    with pytest.raises(InvalidUser, match="door ids"):
+        users_store.update_user("alice", doors=["Front Door"])
+
+
+def test_users_from_before_3_0_adopt_the_first_door_and_new_doors_need_a_tick(temp_users_file):
+    with open(temp_users_file, "w") as f:
+        json.dump({"users": {"alice": {"pin": "1234", "active": True,
+                                       "access": {"valid_from": None, "valid_until": None, "days": [0],
+                                                  "hours": None, "one_time": False}}}}, f)
+    store = UsersStore(temp_users_file)
+    assert store.adopt_doors(["door"]) == 1
+    assert store.adopt_doors(["barrier", "door"]) == 0  # a door added later is nobody's yet
+    profile = store.profile("alice")
+    assert profile["doors"] == ["door"]
+    assert profile["access"] == {"valid_from": None, "valid_until": None, "uses": None,
+                                 "schedule": [{"days": [0], "hours": None}]}
+    assert len(profile["phone_key"]) == 16
+    saved = json.load(open(temp_users_file))["users"]["alice"]
+    assert saved["doors"] == ["door"] and "pin" not in saved and saved["phone_key"] == profile["phone_key"]
+
+
+def test_a_new_pin_forgets_the_phones_that_knew_the_old_one(users_store):
+    users_store.create_user("alice", "1234")
+    key = users_store.profile("alice")["phone_key"]
+    users_store.update_user("alice", doors=["door"])
+    assert users_store.profile("alice")["phone_key"] == key
+    users_store.update_user("alice", pin="4321")
+    assert users_store.profile("alice")["phone_key"] not in ("", key)

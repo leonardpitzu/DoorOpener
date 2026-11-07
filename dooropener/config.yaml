@@ -1,10 +1,11 @@
 name: DoorOpener
-version: "2.10.0"
+version: "3.0.0"
 slug: dooropener
 description: >-
-  A PIN keypad that opens your door through Home Assistant: per-user and guest
-  PINs, brute-force protection with alerts, HTTPS, and an admin panel inside
-  Home Assistant. Works with switch, lock, input_boolean and button entities.
+  A PIN keypad that opens your doors through Home Assistant: a door, a barrier,
+  a gate. Each user gets their doors and hours, guests switch themselves off,
+  and there is brute-force protection with alerts, HTTPS, and an admin panel
+  inside Home Assistant.
 url: https://github.com/leonardpitzu/DoorOpener
 arch:
   - aarch64
@@ -38,31 +39,36 @@ map:
 # inside the container (the host port is in the Network section), and keeps its
 # session key in /data: ha_url, ha_token, ha_cert_pem, port and secret_key exist
 # only in a standalone container's options.json. The configuration page shows
-# the door first, then DoorOpener's own settings as a section; names and
-# descriptions are in translations/en.yaml.
+# the doors first, as a list, then DoorOpener's own settings as a section; names
+# and descriptions are in translations/en.yaml.
 options:
-  entity_id: "switch.dooropener"
-  battery_entity: ""
+  doors: []
   settings:
     ssl: false
     certfile: fullchain.pem
     keyfile: privkey.pem
     trusted_proxies: 0
+    report_to_ha: true
     max_attempts: 5
     session_max_attempts: 3
     block_time_minutes: 5
     max_global_attempts_per_hour: 50
     test_mode: false
 schema:
-  entity_id: "match(^(switch|lock|input_boolean|button)\\.[a-z0-9_]+$)"
-  # Always shown, empty allowed: a battery sensor is optional.
-  battery_entity: "match(^(sensor\\.[a-z0-9_]+)?$)"
+  # config.py checks the rest: ids unique and not one of the keypad's own paths.
+  doors:
+    - name: str
+      id: "match(^[a-z0-9][a-z0-9_-]{0,23}$)"
+      entity_id: "match(^(switch|lock|input_boolean|button|cover|script)\\.[a-z0-9_]+$)"
+      battery_entity: "match(^(sensor\\.[a-z0-9_]+)?$)?"
+      icon: "list(door|barrier|gate|garage)?"
   settings:
     ssl: bool
     certfile: str?
     keyfile: str?
     trusted_proxies: "int(0,5)"
     admin_password: password?
+    report_to_ha: bool
     max_attempts: "int(1,100)"
     session_max_attempts: "int(1,50)"
     block_time_minutes: "int(1,60)"

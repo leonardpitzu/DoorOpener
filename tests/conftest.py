@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 TEST_OPTIONS = {
     "ha_url": "http://test-ha:8123",
     "ha_token": "test-token",
-    "entity_id": "switch.test_door",
-    "battery_entity": "sensor.test_door_battery",
+    "doors": [{"id": "door", "name": "Door", "entity_id": "switch.test_door",
+               "battery_entity": "sensor.test_door_battery"}],
     "port": 6532,
     "test_mode": True,
     "admin_password": "testpass",
@@ -61,11 +61,13 @@ def reset_state(monkeypatch):
     """Fresh rate limits, an empty users store and no CSRF check for every test."""
     import app as app_module
     import pins
+    from passes import Passes
     from security import RateLimiter
 
     # A cheap PIN hash keeps the suite fast; test_pins checks the real cost.
     monkeypatch.setitem(pins._SCRYPT, "n", 2**4)
     monkeypatch.setattr(app_module, "rate_limiter", RateLimiter())
+    monkeypatch.setattr(app_module, "passes", Passes())
     # Dedicated CSRF tests switch it back on.
     monkeypatch.setitem(app_module.app.config, "CSRF_ENABLED", False)
     # Reset users_store to empty (tests add users as needed)
@@ -74,6 +76,5 @@ def reset_state(monkeypatch):
     app_module.users_store._index = None
     app_module.users_store._touch_dirty = False
     app_module.users_store._last_touch_flush = 0.0
-    # Reset battery cache
-    app_module.ha_client._battery_cache = None
-    app_module.ha_client._battery_cache_ts = -(app_module.ha_client._BATTERY_TTL + 1)
+    # Reset the battery cache
+    app_module.ha_client._batteries = {}

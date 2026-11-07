@@ -472,3 +472,125 @@ body #toast-container {
     background: rgba(255,255,255,0.35);
     transform: scale(1.05);
 }
+
+/* Shortcut pages name their doors */
+.door-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin: -0.5rem 0 1.2rem;
+}
+
+.door-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    color: rgba(0, 0, 0, 0.8);
+    font-weight: 600;
+    font-size: 1.05rem;
+}
+
+.door-icon {
+    flex: none;
+}
+
+.no-doors {
+    margin: 0 0 1.2rem;
+    color: rgba(0, 0, 0, 0.7);
+    font-weight: 600;
+}
+
+/* After the PIN: one tile per door */
+.choice {
+    width: 280px;
+    margin: 0 auto 1.5rem;
+}
+
+.choice[hidden] {
+    display: none;
+}
+
+.choice-title {
+    margin-bottom: 14px;
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.8);
+}
+
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+}
+
+.tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 120px;
+    padding: 14px 10px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    background: rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(10px);
+    color: rgba(0, 0, 0, 0.85);
+    font: inherit;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(31, 38, 135, 0.12);
+    transition: transform 0.12s, background 0.18s;
+}
+
+.tile:active {
+    transform: scale(0.96);
+    background: rgba(76, 175, 80, 0.35);
+}
+
+.tile:disabled {
+    opacity: 0.6;
+}
+
+.tile .door-icon {
+    width: 44px;
+    height: 44px;
+}
+
+.tile-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.tile-battery {
+    font-size: 0.8rem;
+    color: rgba(0, 0, 0, 0.6);
+    min-height: 1em;
+}
+
+.choice-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 14px;
+    color: rgba(0, 0, 0, 0.65);
+    font-size: 0.9rem;
+}
+
+.choice-cancel {
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    background: rgba(255, 255, 255, 0.4);
+    font: inherit;
+    cursor: pointer;
+}
+
+/* A PIN that is right, but not for now: told to its owner's phone */
+.toast.refused {
+    background: #d48f00;
+}
