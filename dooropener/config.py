@@ -50,6 +50,11 @@ except FileNotFoundError as _e:
         "Copy options.json.example to options.json and configure it."
     ) from _e
 
+# The app's configuration page keeps DoorOpener's own settings in a "settings"
+# section; options.json may hold them there or, as before 2.10, at the top level.
+if isinstance(_opts.get("settings"), dict):
+    _opts = {**_opts, **_opts["settings"]}
+
 # ---------------------------------------------------------------------------
 # Home Assistant
 # ---------------------------------------------------------------------------
@@ -112,9 +117,10 @@ elif os.getenv("REQUESTS_CA_BUNDLE", "").strip():
 server_port: int = int(os.environ.get("DOOROPENER_PORT", _opts.get("port", 6532)))
 test_mode: bool = bool(_opts.get("test_mode", False))
 
-# Reverse proxies in front of the app whose X-Forwarded-For we believe. Every
-# throttle keys on the client IP, so trusting a hop that is not there lets anyone
-# who reaches the port directly pick their own IP. 0 = clients connect directly.
+# Reverse proxies in front of the app whose X-Forwarded-For we believe, and only
+# from a peer on the local network (see security.LocalProxyFix). Every throttle
+# keys on the client IP, so a forged header must never count. 0 = clients
+# connect directly.
 trusted_proxies: int = int(_opts.get("trusted_proxies", 0))
 
 # HTTPS served by DoorOpener itself. A certificate name without a directory is

@@ -1,19 +1,21 @@
 {
-    "ha_url": "http://homeassistant.local:8123",
-    "ha_token": "your_long_lived_access_token_here",
     "entity_id": "switch.dooropener_zigbee",
     "battery_entity": "sensor.dooropener_zigbee_battery",
+    "settings": {
+        "ssl": false,
+        "certfile": "fullchain.pem",
+        "keyfile": "privkey.pem",
+        "trusted_proxies": 0,
+        "admin_password": "change_me_please",
+        "max_attempts": 5,
+        "session_max_attempts": 3,
+        "block_time_minutes": 5,
+        "max_global_attempts_per_hour": 50,
+        "test_mode": false
+    },
+    "ha_url": "http://homeassistant.local:8123",
+    "ha_token": "your_long_lived_access_token_here",
+    "ha_cert_pem": "",
     "port": 6532,
-    "ssl": false,
-    "certfile": "fullchain.pem",
-    "keyfile": "privkey.pem",
-    "test_mode": false,
-    "admin_password": "change_me_please",
-    "max_attempts": 5,
-    "block_time_minutes": 5,
-    "max_global_attempts_per_hour": 50,
-    "session_max_attempts": 3,
-    "secret_key": "",
-    "trusted_proxies": 0,
-    "ha_cert_pem": ""
+    "secret_key": ""
 }

@@ -28,7 +28,6 @@ from functools import wraps
 from flask import Flask, jsonify, render_template, request, send_from_directory, session, url_for
 from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import InternalServerError, RequestEntityTooLarge
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
 import ingress
@@ -36,7 +35,7 @@ from audit import AuditLog
 from config import get_current_time
 from ha_client import HAClient, HAError
 from pins import DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, generate_pin, is_valid_pin, secure_equals
-from security import RateLimiter, add_security_headers, client_identity
+from security import LocalProxyFix, RateLimiter, add_security_headers, client_identity
 from users_store import KEEP, InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
 
 # Stamped into the image from config.yaml, which the Supervisor passes to the
@@ -55,8 +54,7 @@ if not logger.handlers:
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 if config.trusted_proxies:
-    _hops = config.trusted_proxies
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_hops, x_proto=_hops, x_host=_hops)
+    app.wsgi_app = LocalProxyFix(app.wsgi_app, config.trusted_proxies)
 app.secret_key = config.secret_key or secrets.token_hex(32)
 
 
@@ -64,8 +62,8 @@ class _SessionInterface(SecureCookieSessionInterface):
     """The session cookie is HTTPS-only whenever the request itself came over HTTPS.
 
     That covers DoorOpener's own HTTPS and a trusted reverse proxy's (whose scheme
-    ProxyFix applies), and still works over plain HTTP, where a Secure cookie
-    would never come back and the keypad's CSRF check would always fail.
+    LocalProxyFix applies), and still works over plain HTTP, where a Secure
+    cookie would never come back and the keypad's CSRF check would always fail.
     """
 
     def get_cookie_secure(self, app):

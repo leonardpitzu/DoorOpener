@@ -1,5 +1,5 @@
 name: DoorOpener
-version: "2.9.0"
+version: "2.10.0"
 slug: dooropener
 description: >-
   A PIN keypad that opens your door through Home Assistant: per-user and guest
@@ -20,8 +20,11 @@ ingress_port: 8099
 panel_icon: mdi:door
 panel_title: DoorOpener
 panel_admin: true
-# [PROTO:ssl] is https while the ssl option is on, http otherwise.
-watchdog: "[PROTO:ssl]://[HOST]:[PORT:6532]/health"
+# The health check goes to the ingress listener: plain HTTP with or without the
+# HTTPS setting (the Supervisor reads [PROTO:...] only from top-level options,
+# and HTTPS lives in the settings section), in the same process as the keypad,
+# and reachable only from the Supervisor.
+watchdog: "http://[HOST]:[PORT:8099]/health"
 homeassistant_api: true
 ports:
   6532/tcp: 6532
@@ -29,32 +32,39 @@ ports_description:
   6532/tcp: Keypad
 map:
   - config:rw
-  # Certificates shared by Home Assistant apps, for the ssl option.
+  # Certificates shared by Home Assistant apps, for the HTTPS setting.
   - ssl:ro
 # The app always talks to Home Assistant through the Supervisor, on port 6532
 # inside the container (the host port is in the Network section), and keeps its
 # session key in /data: ha_url, ha_token, ha_cert_pem, port and secret_key exist
-# only in a standalone container's options.json. Names and descriptions shown in
-# the configuration page are in translations/en.yaml.
+# only in a standalone container's options.json. The configuration page shows
+# the door first, then DoorOpener's own settings as a section; names and
+# descriptions are in translations/en.yaml.
 options:
   entity_id: "switch.dooropener"
-  ssl: false
-  test_mode: false
-  max_attempts: 5
-  session_max_attempts: 3
-  block_time_minutes: 5
-  max_global_attempts_per_hour: 50
+  battery_entity: ""
+  settings:
+    ssl: false
+    certfile: fullchain.pem
+    keyfile: privkey.pem
+    trusted_proxies: 0
+    max_attempts: 5
+    session_max_attempts: 3
+    block_time_minutes: 5
+    max_global_attempts_per_hour: 50
+    test_mode: false
 schema:
   entity_id: "match(^(switch|lock|input_boolean|button)\\.[a-z0-9_]+$)"
-  ssl: bool
-  test_mode: bool
-  max_attempts: "int(1,100)"
-  session_max_attempts: "int(1,50)"
-  block_time_minutes: "int(1,60)"
-  max_global_attempts_per_hour: "int(1,1000)"
-  # Optional: hidden behind "Show unused optional configuration options" until set.
-  battery_entity: "match(^(sensor\\.[a-z0-9_]+)?$)?"
-  admin_password: password?
-  certfile: str?
-  keyfile: str?
-  trusted_proxies: "int(0,5)?"
+  # Always shown, empty allowed: a battery sensor is optional.
+  battery_entity: "match(^(sensor\\.[a-z0-9_]+)?$)"
+  settings:
+    ssl: bool
+    certfile: str?
+    keyfile: str?
+    trusted_proxies: "int(0,5)"
+    admin_password: password?
+    max_attempts: "int(1,100)"
+    session_max_attempts: "int(1,50)"
+    block_time_minutes: "int(1,60)"
+    max_global_attempts_per_hour: "int(1,1000)"
+    test_mode: bool
