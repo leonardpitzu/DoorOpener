@@ -3,17 +3,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+    container_name: dooropener
+    # Optional: copy .env.example to .env to set the time zone, port or session key.
     env_file:
-      - .env
-    ports:
-      - "${DOOROPENER_PORT:-6532}:${DOOROPENER_PORT:-6532}"
+      - path: .env
+        required: false
+    # Everything DoorOpener keeps lives in ./data, as /data does in the Home
+    # Assistant app: options.json (yours to write), users.json, logs/ and
+    # secret_key (created on the first start).
+    environment:
+      DOOROPENER_OPTIONS_PATH: /data/options.json
+      USERS_STORE_PATH: /data/users.json
+      DOOROPENER_LOG_DIR: /data/logs
+      DOOROPENER_SECRET_KEY_FILE: /data/secret_key
     volumes:
-      - ./options.json:/app/options.json:ro
-      - ./users.json:/app/users.json:rw
-      - ./logs:/app/logs
+      - ./data:/data
       # HTTPS: put fullchain.pem and privkey.pem in ./ssl, set "ssl": true in
       # options.json, and uncomment. Renewed files are picked up without a restart.
       # - ./ssl:/ssl:ro
+    ports:
+      - "${DOOROPENER_PORT:-6532}:${DOOROPENER_PORT:-6532}"
     restart: unless-stopped
     healthcheck:
       # https when the ssl option is on, http otherwise.
@@ -22,4 +31,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    container_name: dooropener

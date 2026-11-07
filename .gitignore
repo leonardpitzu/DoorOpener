@@ -6,7 +6,9 @@
 options.json
 users.json
 users.json.*
-# The standalone container's HTTPS certificate and private key.
+# The standalone container's data folder (options, users, logs, session key)
+# and its HTTPS certificate and private key.
+data/
 ssl/
 .env
 logs/

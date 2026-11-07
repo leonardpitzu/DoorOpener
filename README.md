@@ -1,108 +1,224 @@
-# DoorOpener for Home Assistant
+# DoorOpener
 
-A secure web keypad for the doors, barriers and gates your [Home Assistant](https://www.home-assistant.io/) opens - modern glass-morphism UI with visual keypad, per-user PINs with their own doors and hours, guests who switch themselves off, audio feedback, battery monitoring, and brute-force protection.
+A PIN keypad in the browser for the doors, barriers and gates that your
+[Home Assistant](https://www.home-assistant.io/) can open. Each person gets
+their own PIN, their own doors and their own hours. Guests switch themselves
+off when their stay ends. Strangers who guess PINs are blocked and you get an
+alert.
 
-[![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
+[![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-3.0.0-blue?style=flat-square)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
 
-<img width="2554" height="1187" alt="image" src="https://github.com/user-attachments/assets/e9e2fd6c-aa32-4ea1-933f-668fad3fbfc4" />
+<p>
+  <img src="docs/keypad.webp" width="240" alt="The keypad">
+  <img src="docs/keypad-tiles.webp" width="240" alt="A PIN for two doors: pick one">
+  <img src="docs/keypad-refused.webp" width="240" alt="Its owner's phone is told why a PIN may not open the barrier">
+</p>
+<p>
+  <img src="docs/admin-users.webp" width="49%" alt="Users with their doors, schedules and guest dates">
+  <img src="docs/admin-guest.webp" width="49%" alt="Adding a guest for three days">
+</p>
 
-<img width="2554" height="1187" alt="image" src="https://github.com/user-attachments/assets/4d5259fa-ee7b-4d03-a02b-b77301cebf0c" />
+## Contents
 
-## Features
+- [What it does](#what-it-does)
+- [Two ways to run it](#two-ways-to-run-it)
+- [Install as a Home Assistant app](#install-as-a-home-assistant-app)
+- [Run it standalone, in Docker](#run-it-standalone-in-docker)
+- [Configuration](#configuration)
+- [Choose a setup: HTTPS, a reverse proxy, or plain HTTP](#choose-a-setup-https-a-reverse-proxy-or-plain-http)
+- [Using it](#using-it)
+- [Home Assistant events](#home-assistant-events)
+- [Security](#security)
+- [Upgrading](#upgrading)
+- [API](#api)
+- [How the code is laid out](#how-the-code-is-laid-out)
+- [Development](#development)
 
-DoorOpener provides a web-based keypad interface to remotely open doors connected to Home Assistant. Users enter their personal PIN on a visual keypad and the system securely communicates with Home Assistant to trigger the door opener.
+## What it does
 
-- **Visual keypad** - 3×4 keypad interface with auto-submit
-- **Several doors** - a door, a barrier, a gate: a PIN that may open one opens it, one that may open several shows a tile for each
-- **Shortcut links** - `/barrier`, `/barrier+door`: the same link for everyone (a QR code at the barrier, a home-screen icon), and the PIN decides
-- **Per-user PINs** - individual PINs, stored hashed, each with the doors it may open
-- **Schedules** - as many windows of days and hours as needed (school mornings, afternoons, weekends)
-- **Guests** - an end date, optionally a number of uses (a visit counts once: barrier, door, barrier out), and switched off by themselves afterwards
-- **Plain answers for the family** - a refused PIN looks like any wrong one, except on its owner's own phone: "Not now. You can open again tomorrow at 07:00."
-- **No names on screen** - the keypad greets by the time of day, never by whose PIN it was
-- **Audio feedback** - success chimes and failure sounds
-- **Battery monitoring** - a battery level per door
-- **Multi-layer security** - rate limiting and IP blocking (see [Security](#security))
-- **Admin UI** - user management with a PIN generator, and an audit log viewer; inside Home Assistant, behind its login
-- **Home Assistant events** - openings fire `dooropener_door_opened` (who, which door), refusals of someone's own PIN `dooropener_access_refused`; both can be switched off
-- **HTTPS** - served by DoorOpener itself; renewed certificates are picked up without a restart
-- **Test mode** - safe development without triggering the actual door
-- **Entity support** - Home Assistant `switch`, `lock`, `input_boolean`, `button`, `cover` and `script` entities
+- **A keypad that works on any phone.** No app to install. It can sit on the
+  home screen like one, and a PIN goes through after a short pause, without
+  pressing ✓.
+- **Several doors.** A door, a barrier, a gate or a garage door, each opened by
+  a Home Assistant entity: `button`, `switch`, `lock`, `input_boolean`, `cover`
+  or `script`.
+  - A PIN that may open one door opens it at once.
+  - A PIN that may open several shows a tile for each, and you tap the one you
+    want.
+- **Shortcut links.** `/barrier` or `/barrier+door` is the same link for
+  everyone, for a QR code at the barrier or a home-screen icon of its own. The
+  PIN still decides what opens.
+- **People, not just PINs.** Tick the doors each user may open, and give them
+  as many weekly time windows as needed. For example, the kids: weekdays
+  07:00–08:30 and 13:00–20:00, weekends 09:00–21:00.
+- **Guests who leave on time.** A guest has an end date and, if you like, a
+  number of uses. When either runs out, they are switched off and stay in the
+  list for next time.
+  - One use is one visit: openings within 15 minutes count once (barrier in,
+    door, barrier out).
+- **Discreet.** The keypad says "Good evening", never whose PIN it was.
+  - A refused PIN looks like any wrong one to a stranger.
+  - Only its owner's own phone is told why, for example "Not now. You can open
+    again tomorrow at 07:00.", so a child isn't left guessing.
+- **Brute-force protection.** Per-device and per-browser blocks that double
+  with each repeat, plus an alert in Home Assistant when wrong PINs pile up. It
+  never locks out the people with the right PIN.
+- **An admin panel** for users, PINs (with a generator that avoids `1234`) and
+  the audit log. In Home Assistant it sits behind your Home Assistant login.
+- **HTTPS served by DoorOpener itself.** Renewed certificates are picked up
+  without a restart.
+- **Home Assistant events** for openings and refusals, to build automations on.
 
-## Installation
+## Two ways to run it
 
-### Home Assistant Add-on (recommended)
+DoorOpener opens a door by asking Home Assistant to press, switch or open an
+entity. It runs either as a Home Assistant app (an add-on), or as an ordinary
+Docker container anywhere on your network that can reach Home Assistant.
 
-1. In Home Assistant go to **Settings -> Add-ons -> Add-on Store -> ⋮ -> Repositories**.
-2. Paste the repository URL:
-   ```
-   https://github.com/leonardpitzu/DoorOpener
-   ```
-3. Find **DoorOpener** in the store and click **Install**.
-4. Add your doors on the app's configuration page.
-5. Click **Start**. The keypad is on port 6532; the admin panel opens with
-   **Open Web UI**, behind your Home Assistant login.
+| | Home Assistant app | Standalone container |
+|---|---|---|
+| **Runs on** | Home Assistant OS or Supervised, from the app store | Any Docker host |
+| **Reaches Home Assistant** | Through the Supervisor: nothing to set up | `ha_url` and a long-lived access token |
+| **Configured in** | The app's **Configuration** tab | `data/options.json`, plus a few environment variables |
+| **Admin panel** | Inside Home Assistant (**Open Web UI**, or the sidebar), behind its login. Optionally also on the keypad port, with a password | On the keypad port at `/admin`, behind `admin_password` (required) |
+| **HTTPS certificate** | The Let's Encrypt or DuckDNS app's files in `/ssl`, nothing to copy | Your certificate files, mounted into the container |
+| **Time zone** | Home Assistant's | `TZ` |
+| **Data** | `/data`, inside Home Assistant's backups | `./data` next to `docker-compose.yml`, for you to back up |
+| **Updates** | Offered by Home Assistant (and automatic if you like) | `git pull` and a rebuild |
 
-> As an app, DoorOpener talks to Home Assistant through the Supervisor and keeps
-> its session key in `/data`, so its configuration page has no URL, token, port
-> or key to fill in. Open the admin panel with **Open Web UI** on the app's page,
-> or switch on **Show in sidebar** there. `admin_password` is optional; set it
-> only to also offer the admin panel on port 6532. See the app's documentation tab.
+**Without any Home Assistant**, the standalone container starts anyway. The
+keypad, PINs, schedules, guests, admin panel and audit log all work, but no door
+opens. Each attempt says "Failed to contact Home Assistant", and the log says
+"No Home Assistant configured". Turn on test mode to try everything out without
+a door.
 
-### Docker
+## Install as a Home Assistant app
 
-A `Dockerfile.dev` is provided for local testing outside Home Assistant:
+1. **Settings → Apps → App Store → ⋮ → Repositories**, and add
+   `https://github.com/leonardpitzu/DoorOpener`.
+2. Find **DoorOpener** in the store and click **Install**.
+3. On the **Configuration** tab, under **Doors**, add one entry per door, each
+   with a name (`Barrier`), a link name (`barrier`) and the entity that opens it
+   (`cover.parking_barrier`). The order is the order of the tiles.
+4. Click **Start**. The keypad is on port 6532: `http://homeassistant.local:6532`.
+5. **Open Web UI** opens the admin panel. Switch on **Show in sidebar** if you
+   want it there too. Add your users and tick their doors.
+6. To reach the keypad from outside your home, see
+   [Choose a setup](#choose-a-setup-https-a-reverse-proxy-or-plain-http).
+   Usually that means turning on **HTTPS** with the Let's Encrypt app's
+   certificate and forwarding port 6532.
+
+The app's **Documentation** tab has a shorter version of this page, written for
+the Home Assistant side.
+
+## Run it standalone, in Docker
+
+Use this when Home Assistant runs as a container or in a VM without the
+Supervisor, or when you want the keypad on another machine.
+
+### What you need
+
+- Docker with Compose 2.24 or later.
+- A Home Assistant that the container can reach, for example
+  `http://homeassistant.local:8123`.
+- A long-lived access token for that Home Assistant: your profile → **Security**
+  → **Long-lived access tokens** → **Create token**.
+  - Use an administrator's token. Opening doors works with any user's token,
+    but Home Assistant accepts DoorOpener's events only from an administrator.
+
+### 1. Get the code
 
 ```bash
-docker build -f Dockerfile.dev -t dooropener:dev .
-cp options.json.example options.json   # edit as needed
-docker run -d \
-  -v $(pwd)/options.json:/app/options.json:ro \
-  -v $(pwd)/users.json:/app/users.json:rw \
-  -v $(pwd)/logs:/app/logs \
-  -p 6532:6532 dooropener:dev
+git clone https://github.com/leonardpitzu/DoorOpener.git
+cd DoorOpener
 ```
 
-Or via Compose:
+### 2. Write the configuration
+
+Everything the container keeps lives in one folder, `./data`. Start it with
+your options:
 
 ```bash
-docker compose up -d
+mkdir data
+cp options.json.example data/options.json
+cp .env.example .env        # optional: time zone, port
 ```
 
-To serve HTTPS, see [Choose a setup](#choose-a-setup).
+In `data/options.json`, set at least:
 
-Standalone, DoorOpener reaches Home Assistant with `ha_url` and a long-lived
-`ha_token`, and the admin panel is on its own port behind `admin_password`. With
-no Home Assistant configured it still runs: the keypad and the admin panel work,
-only opening a door fails (and says why).
+- `doors`: your doors, as on the app's configuration page (see
+  [Doors](#doors)).
+- `settings.admin_password`: the admin panel's password. DoorOpener refuses to
+  start with an empty one or a well-known default.
+- `ha_url` and `ha_token`: your Home Assistant and the token from above.
+
+In `.env`, set `TZ` to the door's time zone, for example `Europe/Bucharest`.
+Schedules and guests' dates are read in it, and it defaults to UTC.
+
+### 3. Start it
+
+```bash
+docker compose up -d --build
+docker compose logs -f dooropener     # look for "Connected to Home Assistant"
+```
+
+The keypad is at `http://<host>:6532` and the admin panel at
+`http://<host>:6532/admin`. On the first start DoorOpener creates the rest of
+`./data`:
+
+| File | What it is |
+|---|---|
+| `options.json` | Your configuration (read only) |
+| `users.json` | Users, their doors and rules, and their PINs, hashed |
+| `secret_key` | The key that signs logins, so they survive restarts |
+| `logs/log.txt` | The audit log: the last 180 days, at most 5 MB |
+
+`users.json` and `secret_key` are readable by their owner only. Back up the
+whole folder.
+
+To serve HTTPS or sit behind a reverse proxy, see
+[Choose a setup](#choose-a-setup-https-a-reverse-proxy-or-plain-http).
+
+### Updating
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Read [Upgrading](#upgrading) before a new major version.
+
+### Without Compose
+
+```bash
+docker build -f Dockerfile.dev -t dooropener .
+docker run -d --name dooropener --restart unless-stopped -p 6532:6532 \
+  -e TZ=Europe/Bucharest \
+  -e DOOROPENER_OPTIONS_PATH=/data/options.json -e USERS_STORE_PATH=/data/users.json \
+  -e DOOROPENER_LOG_DIR=/data/logs -e DOOROPENER_SECRET_KEY_FILE=/data/secret_key \
+  -v "$PWD/data:/data" dooropener
+```
 
 ## Configuration
 
-### `options.json`
-
-All application settings live in a single `options.json` file, laid out like the
-app's configuration page: the doors first, then DoorOpener's own settings, then
-what only a standalone container needs. Copy the example and edit:
-
-```bash
-cp options.json.example options.json
-```
+In the app, these are the fields of the **Configuration** tab. Standalone, they
+are the same keys in `options.json`, with a few more at the end.
 
 ```json
 {
   "doors": [
     {"name": "Barrier", "id": "barrier", "entity_id": "cover.parking_barrier", "icon": "barrier"},
-    {"name": "Door", "id": "door", "entity_id": "switch.dooropener_zigbee",
-     "battery_entity": "sensor.dooropener_zigbee_battery"}
+    {"name": "Door", "id": "door", "entity_id": "button.intercom_open",
+     "battery_entity": "sensor.intercom_battery"}
   ],
   "settings": {
     "ssl": false,
     "certfile": "fullchain.pem",
     "keyfile": "privkey.pem",
     "trusted_proxies": 0,
-    "admin_password": "change_me_please",
+    "admin_password": "a-long-password",
     "report_to_ha": true,
     "max_attempts": 5,
     "session_max_attempts": 3,
@@ -111,107 +227,98 @@ cp options.json.example options.json
     "test_mode": false
   },
   "ha_url": "http://homeassistant.local:8123",
-  "ha_token": "your_long_lived_access_token_here",
-  "ha_cert_pem": "",
-  "port": 6532,
+  "ha_token": "your-long-lived-access-token",
   "secret_key": ""
 }
 ```
 
-A flat `options.json` from before 2.10, with the settings at the top level,
-works the same, and so does one from before 3.0 with a single `entity_id` (and
-`battery_entity`) at the top level: it is one door, `door`, called Door.
+### Doors
 
-`doors`, in the order the keypad shows them:
+One entry per door, in the order the keypad shows them.
 
-| Key | Description | Default |
+| Key | What it is | |
 |---|---|---|
-| `name` | Shown on the keypad, e.g. `Barrier` | _(required)_ |
-| `id` | Lowercase letters, digits, `-` and `_`: the shortcut link (`/barrier`) and what users' door ticks refer to. Keep it once users have the door | _(required)_ |
-| `entity_id` | What opens it: `switch.*`, `lock.*`, `input_boolean.*`, `button.*`, `cover.*` (`open_cover`) or `script.*` | _(required)_ |
-| `battery_entity` | Battery sensor (`sensor.*`) shown on the keypad | `""` |
-| `icon` | `door`, `barrier`, `gate` or `garage` | `door` |
+| `name` | Shown on the keypad, e.g. `Barrier` | required |
+| `id` | The link name: lowercase letters, digits, `-` and `_`. It makes the shortcut link (`/barrier`) and is how users' door ticks refer to the door, so keep it once users have the door | required |
+| `entity_id` | What opens it: `button.*` (press), `switch.*` and `input_boolean.*` (turn on), `lock.*` (unlock), `cover.*` (open) or `script.*` (run) | required |
+| `battery_entity` | A `sensor.*` with the opener's battery level in %, shown on the keypad | optional |
+| `icon` | `door`, `barrier`, `gate` or `garage` | optional, `door` |
 
-`settings`:
+A door added later is opened by nobody until you tick it for a user. DoorOpener
+refuses to start if two doors share an id, or if an id is one of the keypad's own
+paths (`admin`, `static`, `health`, `battery`, `open-door`).
 
-| Key | Description | Default |
+### Settings
+
+| Key | What it does | Default |
 |---|---|---|
-| `ssl` | Serve HTTPS with the certificate below (see [Choose a setup](#choose-a-setup)) | `false` |
-| `certfile` | Certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
-| `keyfile` | The certificate's private key: a file name in `/ssl`, or a full path | `privkey.pem` |
-| `trusted_proxies` | Reverse proxies in front; their `X-Forwarded-For` is believed only from your own network. `0` = clients connect directly | `0` |
-| `admin_password` | Password for the admin panel on DoorOpener's own port; startup fails while it is a well-known default, or empty outside an app | _(required standalone)_ |
-| `report_to_ha` | Send openings and refusals of someone's own PIN to Home Assistant as events and logbook entries. The brute-force alert is sent either way | `true` |
-| `max_attempts` | Failed PIN attempts per IP before blocking | `5` |
-| `session_max_attempts` | Failed attempts per browser session before blocking | `3` |
-| `block_time_minutes` | First block's length; each further block doubles, up to 24 h | `5` |
-| `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert (never a lockout) | `50` |
-| `test_mode` | When `true`, simulates door actions without calling HA | `false` |
+| `ssl` | Serve HTTPS with the certificate below | `false` |
+| `certfile` | The certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
+| `keyfile` | Its private key: a file name in `/ssl`, or a full path | `privkey.pem` |
+| `trusted_proxies` | Reverse proxies in front of DoorOpener: `0` when browsers connect directly, `1` behind one | `0` |
+| `admin_password` | The admin panel's password on the keypad port. Required standalone. In the app it is optional, and without it the panel is only inside Home Assistant | |
+| `report_to_ha` | Send openings, and refusals of someone's own PIN, to Home Assistant as events and logbook entries. The brute-force alert is sent either way | `true` |
+| `max_attempts` | Wrong PINs from one IP address before it is blocked | `5` |
+| `session_max_attempts` | Wrong PINs from one browser before it is blocked; also the wrong admin passwords allowed per IP address | `3` |
+| `block_time_minutes` | The first block's length. Each repeat doubles it, up to 24 hours; a correct PIN resets it | `5` |
+| `max_global_attempts_per_hour` | Wrong PINs per hour, from everyone together, that raise an alert. Never a lockout | `50` |
+| `test_mode` | Go through the motions without opening any door, and without telling Home Assistant | `false` |
 
-Standalone only (an app has the Supervisor for these):
+### Standalone only
 
-| Key | Description | Default |
+The app gets these from the Supervisor. Standalone, they go at the top level of
+`options.json`.
+
+| Key | What it is | Default |
 |---|---|---|
-| `ha_url` | Home Assistant base URL (a trailing `/api` is ignored) | Supervisor API |
-| `ha_token` | Long-lived access token (HA -> Profile -> Security) | Supervisor token |
-| `ha_cert_pem` | Inline PEM certificate for a Home Assistant with a self-signed one (see below) | `""` |
-| `port` | Web server port (overridden by `DOOROPENER_PORT` env var) | `6532` |
-| `secret_key` | Session signing key, 16+ characters (or set `FLASK_SECRET_KEY`); empty means one kept in `DOOROPENER_SECRET_KEY_FILE`, or a random one per start | `""` |
+| `ha_url` | Home Assistant's address. A trailing `/api` is ignored | |
+| `ha_token` | A long-lived access token, preferably an administrator's | |
+| `ha_cert_pem` | Home Assistant's own certificate (PEM), when `ha_url` is HTTPS with a self-signed or private-CA certificate | |
+| `port` | The port to listen on; `DOOROPENER_PORT` wins | `6532` |
+| `secret_key` | The key that signs logins, 16+ characters; `FLASK_SECRET_KEY` wins. Leave it empty to have one kept in `DOOROPENER_SECRET_KEY_FILE` | |
 
-### Environment variables
+And as environment variables (`docker-compose.yml` sets the paths for you):
 
-```bash
-# Port (optional, overrides options.json)
-DOOROPENER_PORT=6532
-
-# Timezone
-TZ=Europe/Amsterdam
-
-# Folder where certfile/keyfile names without a directory are looked up
-DOOROPENER_SSL_DIR=/ssl
-
-# Flask session secret, 16+ characters (recommended for production):
-#   python3 -c 'import secrets; print(secrets.token_hex(32))'
-FLASK_SECRET_KEY=
-
-# Without a secret_key: a persistent file DoorOpener keeps a generated key in
-# (an app uses /data/secret_key)
-DOOROPENER_SECRET_KEY_FILE=/app/logs/secret_key
-```
-
-Configuration priority: environment variables > `options.json` defaults.
-
-### Logs
-
-| Log | Location |
+| Variable | What it is |
 |---|---|
-| Door access / audit log | `/app/logs/log.txt` (bind-mount `./logs:/app/logs`). Circular: the last 180 days, at most 5 MB; the oldest entries make room for new ones |
-| Gunicorn / access log | Container stdout/stderr (`docker logs dooropener`) |
+| `TZ` | The door's time zone (default `UTC`) |
+| `DOOROPENER_PORT` | The port, inside the container and on the host |
+| `FLASK_SECRET_KEY` | A login-signing key, instead of a kept one |
+| `DOOROPENER_OPTIONS_PATH`, `USERS_STORE_PATH`, `DOOROPENER_LOG_DIR`, `DOOROPENER_SECRET_KEY_FILE` | Where the files of `./data` are |
+| `DOOROPENER_SSL_DIR` | Where certificate names without a folder are looked up (default `/ssl`) |
+| `REQUESTS_CA_BUNDLE` | A CA bundle for Home Assistant's certificate, instead of `ha_cert_pem` |
 
-### Choose a setup
+An `options.json` from before 3.0, with a single `entity_id` (and
+`battery_entity`) at the top level, still works as one door called Door. So does
+one from before 2.10, with the settings at the top level.
 
-How guests reach the keypad decides two settings, `ssl` and `trusted_proxies`.
-It is the same as a Home Assistant app and standalone; only where the
-certificate comes from differs.
+## Choose a setup: HTTPS, a reverse proxy, or plain HTTP
+
+How people reach the keypad decides two settings, `ssl` and `trusted_proxies`.
+It works the same in the app and standalone; only where the certificate comes
+from differs.
 
 | Setup | `ssl` | `trusted_proxies` | Keypad address |
 |-------|-------|-------------------|----------------|
-| **A. DoorOpener serves HTTPS** (recommended when the keypad is reachable from the internet) | `true` | `0` | `https://door.example.com:6532` |
-| **B. Behind a reverse proxy or tunnel that does HTTPS** (NGINX Proxy Manager, Cloudflare tunnel, Caddy, Traefik, ...) | `false` | `1` | the proxy's address |
+| **A. DoorOpener serves HTTPS**: recommended when the keypad is reachable from the internet | `true` | `0` | `https://door.example.com:6532` |
+| **B. Behind a reverse proxy or tunnel that does HTTPS**: NGINX Proxy Manager, a Cloudflare tunnel, Caddy, Traefik, ... | `false` | `1` | the proxy's address |
 | **C. Plain HTTP, home network only** | `false` | `0` | `http://<host>:6532` |
 
-**A.** DoorOpener serves HTTPS on its usual port; `certfile` and `keyfile`
-name the certificate (with its full chain) and its private key. A bare file name
-is looked up in `/ssl`; a full path is used as given.
+**A.** DoorOpener serves HTTPS on its usual port. `certfile` and `keyfile` name
+the certificate (with its full chain) and its private key. A bare file name is
+looked up in `/ssl`; a full path is used as given.
 
-- **Home Assistant app**: turn on **HTTPS**. With the Let's Encrypt app (or the
-  DuckDNS app, without a domain of your own) that is all: it writes
+- **In the app**, turn on **HTTPS**. With the Let's Encrypt app (or the DuckDNS
+  app, if you have no domain of your own), that is all: it writes
   `fullchain.pem` and `privkey.pem` to `/ssl`, which are the defaults.
-- **Docker**: put the two files in `./ssl` and uncomment the `./ssl:/ssl:ro`
-  line in `docker-compose.yml`. Or mount your certbot folder and give full paths:
+- **Standalone**, put the two files in `./ssl` and uncomment the `./ssl:/ssl:ro`
+  line in `docker-compose.yml`. Or mount your certbot folder and give full
+  paths:
 
-  ```bash
-  -v /etc/letsencrypt:/etc/letsencrypt:ro
+  ```yaml
+      volumes:
+        - ./data:/data
+        - /etc/letsencrypt:/etc/letsencrypt:ro
   ```
 
   ```json
@@ -222,40 +329,45 @@ is looked up in `/ssl`; a full path is used as given.
   }
   ```
 
-  Mount all of `/etc/letsencrypt`: the files in `live/` are links into `archive/`.
+  Mount all of `/etc/letsencrypt`: the files in `live/` are links into
+  `archive/`.
 
-Renewals need nothing. Every new connection gets the certificate as it is on
-disk, so a renewed one is served at once, without a restart. A renewal caught
-halfway (new certificate, old key) keeps the previous certificate until both
-files are in place. Open DoorOpener by the name on its certificate: an IP
-address gets a certificate warning, and plain `http://` no longer answers.
-DoorOpener refuses to start while the certificate or key is missing, or the two
-do not belong together, and the log says which files it tried. A client must
-finish each request within 15 seconds, so slow connections cannot hold the
-server's threads.
+**Renewals need nothing.**
+- Every new connection gets the certificate as it is on disk, so a renewed one
+  is served at once.
+- A renewal caught halfway (new certificate, old key) keeps the previous
+  certificate until both files are in place.
 
-**B.** The proxy does HTTPS and buffers requests, so slow clients are its
-problem. With `trusted_proxies` at `1`, the brute-force limits see each
-visitor's own address, which DoorOpener takes from the proxy's
-`X-Forwarded-For`, and only when the connection comes from a private, loopback
-or link-local address, where your proxy runs: a client on the internet that
-reaches the port around the proxy cannot pick its own address. With `0` behind
-a proxy, every visitor shares the proxy's address, so one person's wrong PINs
-block everyone. Close the port to the internet if you can.
+**Things to know in setup A:**
+- Open DoorOpener by the name on its certificate. An IP address gets a
+  certificate warning, and plain `http://` no longer answers.
+- DoorOpener refuses to start while the certificate or key is missing, or the
+  two do not belong together. The log says which files it tried.
+- A client must finish each request within 15 seconds, so slow connections
+  cannot tie up the server.
+
+**B.** The proxy does HTTPS. With `trusted_proxies` at `1`, the brute-force
+limits see each visitor's own address, taken from the proxy's `X-Forwarded-For`.
+DoorOpener believes that header only from a private, loopback or link-local
+address, where your proxy runs. A client on the internet that reaches the port
+around the proxy therefore cannot pick its own address.
+
+With `0` behind a proxy, every visitor shares the proxy's address, so one
+person's wrong PINs block everyone. Close port 6532 to the internet if you can.
 
 **C.** Works out of the box, but PINs travel unencrypted: do not forward the
 port to the internet this way.
 
-The session cookie follows the setup by itself: HTTPS-only whenever the request
-came over HTTPS (A, and B through the proxy's `X-Forwarded-Proto`), a normal
-cookie over plain HTTP (C), where an HTTPS-only one would never come back and
-the keypad could not open the door. There is nothing to configure for it.
+**The session cookie follows the setup by itself**, with nothing to configure:
+- HTTPS-only whenever the request came over HTTPS (A, and B through the proxy's
+  `X-Forwarded-Proto`).
+- A normal cookie over plain HTTP (C), where an HTTPS-only one would never come
+  back and the keypad could not work.
 
 ### Home Assistant with a self-signed certificate
 
-Standalone only: an app reaches Home Assistant through the Supervisor. If the
-`ha_url` you give uses HTTPS with a self-signed or private-CA certificate, paste
-that certificate (PEM) into the `ha_cert_pem` option in `options.json`:
+This is standalone only. If `ha_url` is HTTPS with a self-signed or private-CA
+certificate, paste that certificate into `ha_cert_pem`:
 
 ```json
 {
@@ -263,178 +375,226 @@ that certificate (PEM) into the `ha_cert_pem` option in `options.json`:
 }
 ```
 
-The certificate is written to a temporary file at startup and used for all Home Assistant API calls.
+The host name in `ha_url` must be one of the names on that certificate.
 
-> **Note:** The hostname in `ha_url` must match a Subject Alternative Name in the certificate.
+## Using it
 
-## Usage
+### The keypad
 
-1. **Access interface** - visit `http://localhost:6532` (`https://` and the certificate's name with `ssl` on).
-2. **Enter PIN** - use the visual keypad (4-8 digit PIN).
-3. **Auto-submit** - when a valid-length PIN is entered, its door opens; a PIN for several doors shows a tile for each, for 30 seconds.
-4. **Shortcuts** - `/barrier` or `/barrier+door` opens straight to those doors: the PIN still decides which of them it may open. Each shortcut can go on the home screen as an icon of its own.
-5. **Admin access** - **Open Web UI** on the app's page (or its sidebar entry), or the gear icon on the keypad when `admin_password` is set.
+Enter a PIN.
+
+- **One door:** if the PIN may open one door, that door opens.
+- **Several doors:** if it may open several, a tile for each appears for 30
+  seconds; tap one. Each PIN entry opens one door, so barrier and then door
+  means entering the PIN twice.
+- **Shortcut links:** `/barrier` opens straight to that door, and
+  `/barrier+door` to those two. The link is the same for everyone and the PIN
+  decides which of its doors may open.
+  - Add a shortcut to the home screen and it becomes an icon of its own, named
+    after its doors.
+  - On Android, a long press on the main icon offers each door.
+- **What it says:** it greets by the time of day on the phone, never by name,
+  and shows each door's battery level when the door has a sensor.
+
+### Users and guests
+
+In the admin panel's **Users** tab:
+
+- **PIN:** 4 to 8 digits, unique per user. **🎲 Generate** picks one nobody has
+  and nobody would guess first. PINs are stored hashed, so pass a PIN on when
+  you create it; nobody can read it back.
+- **May open:** the doors this user may open.
+- **Full-time or guest:**
+  - A full-time user has no end date.
+  - A guest has an **Until** date (with buttons for the end of today, day 3 and
+    day 7), optionally a start, and optionally a number of **uses**.
+- **When:** add as many time windows as needed, each a set of days and hours.
+  No windows means any time, and 22:00 to 06:00 runs overnight.
+
+For example:
+
+| Who | Set up as |
+|---|---|
+| The kids | Full-time, door only. Mon–Fri 07:00–08:30 and 13:00–20:00, Sat–Sun 09:00–21:00 |
+| A friend staying three days | Guest until the end of day 3, any number of uses |
+| A courier | Guest until Monday, 1 use, Monday 10:00–13:30 |
+| The cleaner | Guest until the end of the contract, Tuesdays 09:00–13:00 |
+
+**When a guest is done** (end date passed or uses used up), they are switched
+off on their own. They stay in the list, marked expired or used up. Next time,
+tick **Enabled** and give a new end date; their uses start afresh.
+
+**Visits and windows:** a visit outlasts the end of a window, so someone who came
+through the barrier at 13:29 can still open the door at 13:31. Times are the
+door's local time.
+
+**Refusals:**
+- Outside its window, a PIN is answered like any wrong PIN, so a stranger cannot
+  tell it exists.
+- A phone that has opened a door with that same user's PIN is told why, and
+  those tries do not count as wrong ones:
+  - "Not now. You can open again tomorrow at 07:00."
+  - "This PIN expired on Sun 9 Nov."
+  - "This PIN can't open Barrier."
+- A new PIN makes DoorOpener forget the phones that knew the old one.
+
+### The audit log
+
+The **Logs** tab lists every attempt: when, from which address, whose PIN, which
+door, and the result. That includes wrong PINs, blocks, refusals with their
+reason, guests switched off, and admin actions.
+
+The log is circular. It keeps the last 180 days and at most 5 MB, and the oldest
+entries make room for new ones.
+
+## Home Assistant events
+
+With `report_to_ha` on (the default), DoorOpener tells Home Assistant:
+
+| Event | When | Data |
+|---|---|---|
+| `dooropener_door_opened` | Every opening, plus a logbook entry ("Barrier opened by alice") | `user`, `door`, `door_name`, `entity_id` |
+| `dooropener_access_refused` | Someone's own PIN refused | `user`, `reason` (`outside_schedule`, `expired`, `used_up`, `not_yet_valid`, `not_allowed`, `disabled`), `doors` tried (empty from the main link) |
+
+Trigger an automation on them to be told when the kids get home, when the
+cleaner arrives, or when someone tries outside their hours. A PIN that matches
+nobody is not an event; too many of those raise the brute-force alert instead.
+That alert is a persistent notification with the id `dooropener_alert`. Test
+mode sends neither events nor alerts.
 
 ## Security
 
-### Protection layers
-
-| Layer | Description |
+| Layer | What it does |
 |---|---|
-| **IP rate limiting** | Blocks an IP after `max_attempts` failures. Keyed on the IP alone, so changing headers buys nothing |
-| **Session rate limiting** | Blocks a browser session after `session_max_attempts` failures |
-| **Exponential backoff** | The first block lasts `block_time_minutes`; each repeat doubles it, up to 24 h. A correct PIN resets it |
-| **Admin login limiting** | Per-IP, with the same backoff, after `session_max_attempts` wrong passwords |
-| **Brute-force alert** | `max_global_attempts_per_hour` failures in an hour raise a Home Assistant notification. Never a lockout, which an attacker could use to shut everyone out |
-| **No PIN oracle** | A disabled PIN, one outside its window, or one for another door is answered and counted like any wrong PIN. Only a phone that has opened with that same user's PIN before, holding a signed cookie that a new PIN invalidates, is told why |
-| **Hashed PINs** | `users.json` holds scrypt hashes, never the PINs; older plain-text stores are converted on load |
-| **Admin in Home Assistant** | In an app, the admin panel is reached through ingress behind the Home Assistant login; without `admin_password` it is not on the public port at all |
-| **Admin session expiry** | Checked on the server: 12 h, or 30 days with "remember me". Bounds a stolen cookie |
-| **Startup checks** | Refuses to start with an empty or default admin password, a guessable secret key, or `ssl` on without a usable certificate |
-| **Audit logging** | Every attempt logged with timestamp, IP, session, user, and result |
-| **HTTPS** | Served by DoorOpener itself with `ssl`; renewed certificates are picked up without a restart |
-| **Slow clients** | With `ssl`, a client gets 15 s for each request, so slow connections cannot hold the server's threads |
-| **Input validation** | PINs are 4-8 ASCII digits; request bodies are capped at 64 KiB |
-| **Security headers** | CSP with scripts from DoorOpener only, X-Frame-Options DENY (SAMEORIGIN for Home Assistant's frame), no-sniff, etc. |
+| **Per-device blocks** | An IP address is blocked after `max_attempts` wrong PINs. Keyed on the address alone, so changing headers buys nothing |
+| **Per-browser blocks** | A browser is blocked after `session_max_attempts` wrong PINs |
+| **Growing blocks** | The first block lasts `block_time_minutes`, and each repeat doubles it, up to 24 hours. A correct PIN resets it |
+| **Admin login limits** | Per IP address, with the same backoff, after `session_max_attempts` wrong passwords |
+| **Alerts, not lockouts** | `max_global_attempts_per_hour` wrong PINs within an hour raise a Home Assistant notification. A lockout for everyone would hand an attacker a way to keep you out |
+| **No PIN oracle** | A disabled PIN, one outside its window, or one for another door is answered and counted like any wrong PIN. Only the owner's own phone, holding a signed cookie that a new PIN invalidates, is told why |
+| **One-time door choice** | The tiles' pass is kept on the server: it works once, from the browser that entered the PIN, for 30 seconds |
+| **Hashed PINs** | `users.json` holds scrypt hashes, never PINs. Plain-text stores from before 2.8 are converted on load |
+| **Admin inside Home Assistant** | In the app, the admin panel is reached through ingress, behind the Home Assistant login. Without `admin_password` it is not on the keypad port at all |
+| **Admin session expiry** | Checked on the server: 12 hours, or 30 days with "remember me", which bounds a stolen cookie |
+| **Startup checks** | DoorOpener refuses to start with an empty or default admin password, a guessable secret key, `ssl` on without a usable certificate, or doors that cannot work |
+| **HTTPS** | Served by DoorOpener itself; renewed certificates are picked up without a restart; slow clients get 15 seconds per request |
+| **Input limits** | PINs are 4 to 8 digits, and request bodies are capped at 64 KiB |
+| **Headers** | A Content Security Policy allowing only DoorOpener's own scripts, `X-Frame-Options: DENY` (`SAMEORIGIN` for Home Assistant's frame), `nosniff`, a strict referrer policy, and `no-store` for anything that is not a static file |
 
-Rate limits trust `X-Forwarded-For` only for the `trusted_proxies` hops you configure, and only from a proxy on your own network, so a client that reaches the port directly cannot pick its own IP.
+## Upgrading
 
-### Security headers
+- **3.0**
+  - **The door is now a list of doors.**
+    - The app: Home Assistant does not carry the old door entity over, so add
+      your door again under **Doors**, as the first entry, and restart.
+    - Standalone: an `options.json` with the old `entity_id` keeps working as
+      one door.
+  - **Users:** existing users get the first door, and doors you add later need
+    ticking. One-time PINs became guests with 1 use.
+  - **Logs:** the rotated log files are folded into the one circular log.
+  - **Standalone files:** `docker-compose.yml` now keeps everything in `./data`.
+    Move `options.json`, `users.json` and `logs/` there, and, if you used one,
+    the key file named in `DOOROPENER_SECRET_KEY_FILE` as `data/secret_key`.
+- **2.10**: DoorOpener's own settings moved into a **settings** section. Home
+  Assistant does not carry values across such a move, so check them once after
+  updating.
+- **2.8**: PINs are stored hashed. Plain-text PINs are converted on the first
+  start; backups made before then still hold them in plain text.
 
-Every response includes:
+## API
 
-- `Content-Security-Policy` - self-only; scripts are static files, never inline
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY` (`SAMEORIGIN` for the admin pages Home Assistant shows in its own frame)
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy` - geolocation, camera, microphone disabled
-- `Cache-Control: no-store`
+Every error is JSON: `{"status": "error", "message": "..."}`.
 
-## API endpoints
-
-| Method | Path | Description |
+| Method | Path | What it does |
 |---|---|---|
-| `GET` | `/` | Main keypad interface |
+| `GET` | `/` | The keypad |
 | `GET` | `/<door>[+<door>...]` | A shortcut page for those doors |
-| `POST` | `/open-door` | `{"pin": ..., "doors": [...]}` (`doors` from a shortcut page only). One door: opened, `{"status": "success", "door": ...}`. Several: `{"status": "choose", "pass": ..., "doors": [...]}` |
-| `POST` | `/open-door/choice` | `{"pass": ..., "door": ...}`: the tile picked, within 30 s, from the same browser |
-| `GET` | `/battery?door=<id>` | A door's battery level (`{"level": 85}`) |
-| `GET` | `/manifest.webmanifest[?to=<doors>]` | The web app manifest; a shortcut's own with `to` |
-| `GET` | `/health` | Liveness probe for the Supervisor watchdog (`{"status": "ok", "version": ...}`) |
-| `GET` | `/admin` | Admin dashboard |
-| `POST` | `/admin/auth` | Admin login |
-| `GET` | `/admin/check-auth` | Check admin session |
-| `POST` | `/admin/logout` | Admin logout |
-| `GET` | `/admin/logs` | Retrieve audit logs (admin auth required) |
-| `POST` | `/admin/logs/clear` | Clear logs (admin auth required) |
-| `GET` | `/admin/users` | List users, with their `doors` and `access` rules, and the configured `doors` (admin auth required) |
-| `POST` | `/admin/users` | Create user: `username`, `pin`, `doors`, optional `access` (admin auth required) |
-| `PUT` | `/admin/users/<name>` | Update user: any of `pin`, `active`, `doors`, `access` (`null` clears it) (admin auth required) |
-| `DELETE` | `/admin/users/<name>` | Delete user (admin auth required) |
-| `GET` | `/admin/generate-pin?length=6` | A random unused, non-trivial PIN (admin auth required) |
+| `POST` | `/open-door` | `{"pin": "...", "doors": [...]}`, with `doors` sent only from a shortcut page. One door: opened, `{"status": "success", "door": "..."}`. Several: `{"status": "choose", "pass": "...", "doors": [...]}`. Refused on the owner's phone: `403 {"status": "refused", "message": "..."}` |
+| `POST` | `/open-door/choice` | `{"pass": "...", "door": "..."}`: the tile picked, within 30 s, from the same browser |
+| `GET` | `/battery?door=<id>` | A door's battery level: `{"level": 85}`, or `null` |
+| `GET` | `/manifest.webmanifest[?to=<doors>]` | The web app manifest, or a shortcut's own |
+| `GET` | `/health` | `{"status": "ok", "version": "..."}`, for health checks |
+| `GET` | `/admin` | The admin panel |
+| `POST` | `/admin/auth`, `/admin/logout`; `GET` `/admin/check-auth` | Admin login on the keypad port |
+| `GET` | `/admin/logs` | The audit log |
+| `POST` | `/admin/logs/clear` | `{"mode": "all"}` or `{"mode": "test_only"}` |
+| `GET` | `/admin/users` | The users, with their `doors`, `access` rules and visits, and the configured `doors` |
+| `POST` | `/admin/users` | Create a user: `username`, `pin`, `doors`, optionally `access` |
+| `PUT` | `/admin/users/<name>` | Change any of `pin`, `active`, `doors`, `access` (`null` clears it) |
+| `DELETE` | `/admin/users/<name>` | Delete a user |
+| `GET` | `/admin/generate-pin?length=6` | A random PIN that nobody has and nobody would guess first |
 
-Every error is JSON of the form `{"status": "error", "message": "..."}`.
+The admin endpoints need a login on the keypad port. Through Home Assistant's
+ingress they need none: Home Assistant has signed the user in, and only its
+administrators get in. Requests that change something carry an `X-CSRF-Token`.
 
-`access` is `null` (the PIN always works) or an object with any of
-`valid_from` / `valid_until` (local time, `2026-11-10T08:00`; an end date makes
-the user a guest, switched off once it passes), `uses` (a guest's number of
-visits; openings within 15 minutes count once) and `schedule`: a list of
-`{"days": [0, 1, 2, 3, 4], "hours": ["07:00", "20:00"]}` rows, any of which
-lets the PIN in (Monday = 0; `null` days: every day; `null` hours: all day; a
-later start than end runs overnight). A guest needs `valid_until`.
+`access` is `null`, meaning always, or:
 
-Through Home Assistant's ingress the admin endpoints need no login: Home
-Assistant has authenticated the user, and only its administrators get in.
-
-## Architecture
-
-```
-┌────────────────────────────────────────────────────┐
-│                      app.py                        │
-│           Flask routes & request handling          │
-├──────────────┬──────────────┬──────────────────────┤
-│ config.py    │ security.py  │ ha_client.py         │
-│ options.json │ RateLimiter  │ HAClient             │
-│ loader       │ headers      │ (requests.Session)   │
-│ timezone     │ validation   │ trigger / battery    │
-├──────────────┬──────────────┬──────────────────────┤
-│ pins.py      │ audit.py     │ users_store.py       │
-│ PIN rules    │ AuditLog     │ UsersStore           │
-│ generator    │ JSON lines   │ JSON user database   │
-└──────────────┴──────────────┴──────────────────────┘
+```json
+{
+  "valid_from": "2026-11-10T08:00",
+  "valid_until": "2026-11-12T23:59",
+  "uses": 3,
+  "schedule": [
+    {"days": [0, 1, 2, 3, 4], "hours": ["07:00", "20:00"]},
+    {"days": [5, 6], "hours": null}
+  ]
+}
 ```
 
-| Module | Responsibility |
+- `valid_until` makes the user a guest. `valid_from` and `uses` need it.
+- Times are the door's local time.
+- `days` run from Monday = 0; `null` means every day.
+- `hours` set to `null` means all day.
+- Any one row of `schedule` lets the PIN in.
+
+## How the code is laid out
+
+| Module | What it does |
 |---|---|
-| `dooropener/config.py` | Loads `options.json`, exposes all settings as module attributes, timezone handling via `zoneinfo` |
-| `dooropener/gunicorn.conf.py` | Server settings (port, HTTPS, the single worker), shared by the app and the container |
-| `dooropener/tls.py` | `Certificate`: the HTTPS certificate, reloaded when its files change; deadlines for slow clients |
-| `dooropener/security.py` | `Throttle` (per-key backoff), `FailureAlarm`, `RateLimiter`, client identity, security headers |
-| `dooropener/pins.py` | PIN validation, hashing, constant-time comparison, the PIN generator |
-| `dooropener/access.py` | When a PIN works: a guest's dates and uses (counted per visit), schedules of days and hours |
+| `dooropener/app.py` | The Flask app: routes, the PIN → door flow, refusals, the admin API |
+| `dooropener/config.py` | Reads `options.json` and the environment: doors, settings, startup checks |
+| `dooropener/access.py` | When a PIN works: a guest's dates and uses (counted per visit), schedules |
+| `dooropener/users_store.py` | Users in one JSON file, written atomically: hashed PINs, doors, rules, visits, guests switched off |
 | `dooropener/passes.py` | The 30-second pass between a PIN for several doors and the tile picked |
-| `dooropener/phones.py` | The signed cookie that recognises a user's own phone, for plain refusals |
-| `dooropener/ingress.py` | The admin panel inside Home Assistant: the ingress listener (apps only) |
-| `dooropener/audit.py` | `AuditLog`: the circular audit trail (180 days, 5 MB): writes, reads back, trims and clears |
-| `dooropener/ha_client.py` | `HAClient` class wrapping `requests.Session` - dispatches `switch`/`lock`/`input_boolean`/`button`/`cover`/`script` services; best-effort alerts, opening and refusal events and logbook entries, skipped without Home Assistant |
-| `dooropener/users_store.py` | Atomic JSON-based user CRUD with hashed PINs, doors, access rules, visits, and guests switched off when done |
-| `dooropener/app.py` | Flask app, route handlers, audit logging |
+| `dooropener/phones.py` | The signed cookie that recognises a user's own phone |
+| `dooropener/security.py` | Blocks with backoff, the brute-force alarm, client identity, security headers, trusted proxies |
+| `dooropener/pins.py` | PIN rules, hashing, constant-time comparison, the generator |
+| `dooropener/audit.py` | The circular audit log |
+| `dooropener/ha_client.py` | Home Assistant calls: opening doors, battery levels, events, logbook, alerts; skipped without Home Assistant |
+| `dooropener/ingress.py` | The admin panel inside Home Assistant (the app only) |
+| `dooropener/tls.py` | The HTTPS certificate, reloaded when its files change, and the slow-client deadlines |
+| `dooropener/gunicorn.conf.py` | The server: port, HTTPS, one worker with threads; shared by the app and the container |
+| `dooropener/config.yaml`, `translations/en.yaml`, `DOCS.md` | The Home Assistant app: manifest, configuration page texts, documentation tab |
+| `Dockerfile.dev`, `docker-compose.yml` | The standalone container |
 
 ## Development
 
-### Prerequisites
-
-- Python 3.12+
-- An `options.json` file (copy from `options.json.example`)
-
-### Local setup
+You need Python 3.12 or later.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp options.json.example options.json   # edit as needed
-python app.py
+cp options.json.example dooropener/options.json
+# in it: set a real admin_password, and "test_mode": true to open nothing
+python dooropener/app.py                          # http://localhost:6532
 ```
 
-### Running tests
+Tests, lint and the security scan, as CI runs them:
 
 ```bash
-pytest --tb=short -q
+pytest tests/ --cov=dooropener --cov-fail-under=75
+ruff check dooropener/ tests/
+bandit -q -r dooropener/
 ```
 
-With coverage:
+CI (`.github/workflows/ci.yml`) runs these on every push and pull request, and
+builds both images: the standalone `Dockerfile.dev` and the app's own
+`dooropener/Dockerfile`. Dependabot proposes dependency updates monthly.
 
-```bash
-pytest --cov=./ --cov-report=term-missing --cov-fail-under=75
-```
-
-### Linting & security
-
-```bash
-ruff check .          # lint
-bandit -r . -x tests  # security scan
-```
-
-### Test mode
-
-Set `"test_mode": true` in `options.json` to test the interface without actually triggering the door in Home Assistant.
-
-## CI / CD
-
-The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
-
-| Job | Tool | Purpose |
-|---|---|---|
-| **Tests** | pytest + pytest-cov | Unit/integration tests, 75 % coverage gate |
-| **Lint** | ruff | Code style and import checks |
-| **Security** | bandit | Static security analysis |
-| **Docker** | docker build | Smoke-test the dev container image |
-
-Monthly pull requests for dependency updates are configured via `.github/dependabot.yml`:
-
-- **pip** dependencies
-- **GitHub Actions** versions
+A release is a pull request to `master` that bumps `version` in
+`dooropener/config.yaml`. Home Assistant offers the update once it is merged.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT; see [LICENSE](LICENSE).
