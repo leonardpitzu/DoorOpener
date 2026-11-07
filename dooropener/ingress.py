@@ -1,4 +1,7 @@
-"""The admin panel in Home Assistant's sidebar, served through its ingress proxy.
+"""The admin panel inside Home Assistant, served through its ingress proxy.
+
+Home Assistant opens it from the app's Open Web UI button, or from a sidebar
+entry when the user switches one on.
 
 Home Assistant relays ``/api/hassio_ingress/<token>/...`` from a logged-in
 user's browser to the Supervisor, which forwards it over plain HTTP to this
@@ -73,5 +76,5 @@ def serve(app, port: int = PORT):
     # All interfaces of the container, which only the app network reaches: the port is not published.
     server = make_server("0.0.0.0", port, IngressApp(app), threaded=True)  # nosec B104
     threading.Thread(target=server.serve_forever, name="ingress", daemon=True).start()
-    logging.getLogger("dooropener").info("Admin panel available in Home Assistant's sidebar")
+    logging.getLogger("dooropener").info("Admin panel available inside Home Assistant (Open Web UI)")
     return server

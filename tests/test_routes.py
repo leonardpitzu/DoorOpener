@@ -100,3 +100,10 @@ def test_correct_pin_during_a_block_is_refused_and_keeps_the_block(client, monke
 
     assert r.status_code == 429
     assert throttle.blocked_until("sessBlock") is not None
+
+
+def test_the_session_cookie_is_https_only_exactly_when_the_request_is_https(client):
+    plain = client.get("/").headers["Set-Cookie"]
+    secure = client.get("/", base_url="https://door.example").headers["Set-Cookie"]
+    assert "Secure" not in plain  # over plain HTTP it would never come back
+    assert "Secure" in secure and "HttpOnly" in secure

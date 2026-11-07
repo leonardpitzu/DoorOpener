@@ -29,7 +29,6 @@ TEST_OPTIONS = {
     "max_global_attempts_per_hour": 50,
     "session_max_attempts": 3,
     "secret_key": "test-secret-key-fixed",
-    "session_cookie_secure": False,
     "ha_cert_pem": "",
 }
 

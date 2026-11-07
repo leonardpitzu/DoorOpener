@@ -7,6 +7,7 @@ and exposes all settings as module-level attributes.
 import json
 import logging
 import os
+import secrets
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -55,8 +56,8 @@ except FileNotFoundError as _e:
 SUPERVISOR_URL = "http://supervisor/core"
 
 # Running as a Home Assistant app: the Supervisor hands every app a token. That
-# brings the Supervisor's API connection and the admin panel in Home Assistant's
-# sidebar; standalone, neither exists and nothing depends on them.
+# brings the Supervisor's API connection and the admin panel inside Home
+# Assistant; standalone, neither exists and nothing depends on them.
 ha_app: bool = bool(os.environ.get("SUPERVISOR_TOKEN"))
 
 
@@ -166,7 +167,7 @@ _PLACEHOLDER_SECRETS = {
 MIN_SECRET_KEY_LENGTH = 16
 
 # The admin password guards the admin panel on DoorOpener's own port. A Home
-# Assistant app also has the panel in Home Assistant's sidebar, behind your Home
+# Assistant app also has the panel inside Home Assistant, behind your Home
 # Assistant login, so there the password is optional: without one, the panel is
 # not offered on the public port at all.
 admin_password: str = (_opts.get("admin_password") or "").strip()
@@ -186,15 +187,28 @@ if secret_key and (len(secret_key) < MIN_SECRET_KEY_LENGTH or secret_key.lower()
         "characters, so session cookies (admin logins included) could be forged. Leave it empty "
         "for a random key, or generate one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
     )
-random_secret_warning: bool = secret_key is None
 
-# ---------------------------------------------------------------------------
-# Session cookie security
-# ---------------------------------------------------------------------------
-_env_secure = os.environ.get("SESSION_COOKIE_SECURE")
-if _env_secure is not None:
-    session_cookie_secure: bool = _env_secure.lower() == "true"
-else:
-    session_cookie_secure = bool(_opts.get("session_cookie_secure", False))
-# Served over HTTPS by DoorOpener itself, the cookie never needs plain HTTP.
-session_cookie_secure = session_cookie_secure or ssl_enabled
+
+def _kept_secret_key(path: str) -> str:
+    """The key stored at *path*, created there (readable by this user only) the first time."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            key = f.read().strip()
+        if len(key) >= MIN_SECRET_KEY_LENGTH:
+            return key
+    except FileNotFoundError:
+        pass
+    key = secrets.token_hex(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    return key
+
+
+# Without a configured key, a Home Assistant app keeps a generated one in /data
+# (run.sh names the file), so logins survive restarts with nothing to set up.
+# Standalone, set DOOROPENER_SECRET_KEY_FILE to a persistent path to get the same.
+_secret_key_file = os.environ.get("DOOROPENER_SECRET_KEY_FILE", "").strip()
+if secret_key is None and _secret_key_file:
+    secret_key = _kept_secret_key(_secret_key_file)
+random_secret_warning: bool = secret_key is None

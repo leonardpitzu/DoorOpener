@@ -10,6 +10,7 @@ import sys
 
 import pytest
 import trustme
+import yaml
 
 import config
 
@@ -50,6 +51,26 @@ def test_the_secret_key_from_the_environment_is_checked_too(tmp_path):
     assert _import(tmp_path, env={"FLASK_SECRET_KEY": "dev"}).returncode != 0
 
 
+def test_without_a_key_one_is_kept_in_the_key_file(tmp_path):
+    key_file = tmp_path / "secret_key"
+    code = "import config; print(config.secret_key, config.random_secret_warning)"
+    first = _import(tmp_path, code, env={"DOOROPENER_SECRET_KEY_FILE": str(key_file)})
+    key, warned = first.stdout.split()
+    assert len(key) == 64 and warned == "False", first.stderr
+    assert key_file.read_text().strip() == key
+    assert key_file.stat().st_mode & 0o777 == 0o600  # inside the container's /data
+    again = _import(tmp_path, code, env={"DOOROPENER_SECRET_KEY_FILE": str(key_file)})
+    assert again.stdout.split()[0] == key  # the same key after a restart
+
+
+def test_a_configured_key_wins_over_the_key_file(tmp_path):
+    key_file = tmp_path / "secret_key"
+    result = _import(tmp_path, "import config; print(config.secret_key)",
+                     env={"DOOROPENER_SECRET_KEY_FILE": str(key_file)}, secret_key="a-configured-key-0123456789")
+    assert result.stdout.strip() == "a-configured-key-0123456789"
+    assert not key_file.exists()
+
+
 def test_an_empty_secret_key_means_a_random_one(tmp_path):
     result = _import(tmp_path, "import config; print(config.secret_key, config.random_secret_warning)")
     assert result.stdout.split() == ["None", "True"]
@@ -88,21 +109,19 @@ def test_the_app_offers_its_admin_panel_through_ingress():
     assert "\ningress: true\n" in manifest
     assert f"\ningress_port: {ingress.PORT}\n" in manifest
     assert "\npanel_admin: true\n" in manifest
-    assert "\n  admin_password: password?\n" in manifest
     assert "8099" not in manifest.split("ports:")[1].split("ports_description:")[0]  # never on the host
 
 
 def test_https_is_off_by_default(tmp_path):
-    result = _import(tmp_path, "import config; print(config.ssl_enabled, config.session_cookie_secure)")
-    assert result.stdout.split() == ["False", "False"], result.stderr
+    result = _import(tmp_path, "import config; print(config.ssl_enabled)")
+    assert result.stdout.split() == ["False"], result.stderr
 
 
-def test_https_looks_in_the_shared_ssl_folder_and_secures_the_cookie(tmp_path):
+def test_https_looks_in_the_shared_ssl_folder(tmp_path):
     _issue(tmp_path)
-    code = "import config; print(config.ssl_certfile, config.ssl_keyfile, config.session_cookie_secure)"
+    code = "import config; print(config.ssl_certfile, config.ssl_keyfile)"
     result = _import(tmp_path, code, env={"DOOROPENER_SSL_DIR": str(tmp_path)}, ssl=True)
-    assert result.stdout.split() == [str(tmp_path / "fullchain.pem"), str(tmp_path / "privkey.pem"), "True"], \
-        result.stderr
+    assert result.stdout.split() == [str(tmp_path / "fullchain.pem"), str(tmp_path / "privkey.pem")], result.stderr
 
 
 def test_https_takes_full_paths_as_given(tmp_path):
@@ -128,7 +147,6 @@ def test_the_app_health_check_and_web_ui_follow_the_ssl_option():
     with open(os.path.join(APP_DIR, "config.yaml"), encoding="utf-8") as f:
         manifest = f.read()
     # The Supervisor resolves [PROTO:ssl] from the option named ssl.
-    assert 'webui: "[PROTO:ssl]://' in manifest
     assert 'watchdog: "[PROTO:ssl]://' in manifest
     assert "\n  ssl: false\n" in manifest and "\n  ssl: bool\n" in manifest
     assert "\n  - ssl:ro\n" in manifest
@@ -173,3 +191,39 @@ def test_the_service_worker_only_caches_the_shell_and_static_files():
 def test_pages_make_no_third_party_requests(client):
     for page in ("/", "/admin"):
         assert b"api.github.com" not in client.get(page).data
+
+
+# ---------------------------------------------------------------------------
+# The app's configuration page
+# ---------------------------------------------------------------------------
+def _yaml(name):
+    with open(os.path.join(APP_DIR, name), encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def test_the_app_asks_only_for_what_an_app_needs():
+    schema = _yaml("config.yaml")["schema"]
+    # The Supervisor connection, the container port and a kept key cover these.
+    assert not {"ha_url", "ha_token", "ha_cert_pem", "port", "secret_key", "session_cookie_secure"} & set(schema)
+    assert schema["admin_password"] == "password?"
+
+
+def test_every_option_has_a_name_and_a_description():
+    manifest, words = _yaml("config.yaml"), _yaml("translations/en.yaml")
+    assert set(words["configuration"]) == set(manifest["schema"])
+    for key, text in words["configuration"].items():
+        assert text["name"] and len(text["description"]) > 20, key
+    assert set(words["network"]) == set(manifest["ports"])
+
+
+@pytest.mark.parametrize("option, good, bad", [
+    ("entity_id", ["button.intercom_open", "switch.front_door", "lock.door", "input_boolean.buzz"],
+     ["", "intercom_open", "sensor.door", "button.Front"]),
+    ("battery_entity", ["", "sensor.door_battery"], ["switch.door", "sensor."]),
+])
+def test_entity_options_are_checked_as_the_supervisor_will(option, good, bad):
+    import re
+    rule = _yaml("config.yaml")["schema"][option]
+    pattern = re.fullmatch(r"match\((.*)\)\??", rule).group(1)  # the Supervisor's own parsing
+    assert all(re.match(pattern, value) for value in good)
+    assert not any(re.match(pattern, value) for value in bad)

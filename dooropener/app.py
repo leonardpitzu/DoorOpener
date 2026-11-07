@@ -5,7 +5,7 @@ This module holds the routes and the request plumbing. The rest lives next door:
 settings in ``config``, brute-force protection in ``security``, PIN rules in
 ``pins``, when a PIN works in ``access``, users in ``users_store``, the audit
 trail in ``audit``, the Home Assistant calls in ``ha_client`` and the admin panel
-in Home Assistant's sidebar in ``ingress``.
+inside Home Assistant in ``ingress``.
 
 The admin panel answers in two places. Through ingress, Home Assistant has
 already logged the user in, so a Home Assistant administrator gets straight in
@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, jsonify, render_template, request, send_from_directory, session, url_for
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import InternalServerError, RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -57,8 +58,22 @@ if config.trusted_proxies:
     _hops = config.trusted_proxies
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_hops, x_proto=_hops, x_host=_hops)
 app.secret_key = config.secret_key or secrets.token_hex(32)
+
+
+class _SessionInterface(SecureCookieSessionInterface):
+    """The session cookie is HTTPS-only whenever the request itself came over HTTPS.
+
+    That covers DoorOpener's own HTTPS and a trusted reverse proxy's (whose scheme
+    ProxyFix applies), and still works over plain HTTP, where a Secure cookie
+    would never come back and the keypad's CSRF check would always fail.
+    """
+
+    def get_cookie_secure(self, app):
+        return request.is_secure
+
+
+app.session_interface = _SessionInterface()
 app.config.update(
-    SESSION_COOKIE_SECURE=config.session_cookie_secure,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_PATH="/",
@@ -96,7 +111,7 @@ def start_background_services() -> None:
 # Request plumbing
 # ---------------------------------------------------------------------------
 def _visitor() -> ingress.Visitor | None:
-    """The Home Assistant user, when the request came through the sidebar (ingress)."""
+    """The Home Assistant user, when the request came through Home Assistant (ingress)."""
     return ingress.visitor(request.environ)
 
 
@@ -320,7 +335,7 @@ def _audit_admin(status: str, details: str) -> None:
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    if _visitor() is not None:  # the sidebar opens straight onto the admin panel
+    if _visitor() is not None:  # Home Assistant opens straight onto the admin panel
         return admin()
     return render_template(
         "index.html",
@@ -434,8 +449,8 @@ def admin():
         return render_template("admin.html", notice="DoorOpener's admin panel is for Home Assistant "
                                                     "administrators."), 403
     if visitor is None and not config.public_admin:
-        return render_template("admin.html", notice="The admin panel is in Home Assistant: open "
-                                                    "DoorOpener in its sidebar."), 404
+        return render_template("admin.html", notice="The admin panel is in Home Assistant: Settings → "
+                                                    "Apps → DoorOpener → Open Web UI."), 404
     return render_template(
         "admin.html",
         csrf_token=_csrf_token(),

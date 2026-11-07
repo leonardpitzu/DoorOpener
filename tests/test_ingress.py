@@ -116,7 +116,7 @@ def no_public_admin(app_module, monkeypatch):
 def test_without_a_password_the_admin_panel_is_only_in_home_assistant(client, ha):
     page = client.get("/admin")
     assert page.status_code == 404
-    assert "open DoorOpener in its sidebar" in page.get_data(as_text=True)
+    assert "Open Web UI" in page.get_data(as_text=True)
     assert client.get("/admin/users").status_code == 404
     assert client.post("/admin/auth", json={"password": ""}).status_code == 404
     assert "gear-spin-wrap" not in client.get("/").get_data(as_text=True)
