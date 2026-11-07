@@ -29,6 +29,7 @@ alert.
 - [Using it](#using-it)
 - [Home Assistant events](#home-assistant-events)
 - [Security](#security)
+- [Your data, keys and backups](#your-data-keys-and-backups)
 - [Upgrading](#upgrading)
 - [API](#api)
 - [How the code is laid out](#how-the-code-is-laid-out)
@@ -63,6 +64,10 @@ alert.
 - **Brute-force protection.** Per-device and per-browser blocks that double
   with each repeat, plus an alert in Home Assistant when wrong PINs pile up. It
   never locks out the people with the right PIN.
+- **PINs that stay secret at rest.** They are hashed and keyed with a separate
+  PIN key, so a copy of the user file gives nobody a PIN, and nobody, the admin
+  included, can read a PIN back. Standalone, the passwords and tokens can stay
+  out of the configuration file, and the container never runs as root.
 - **An admin panel** for users, PINs (with a generator that avoids `1234`) and
   the audit log. In Home Assistant it sits behind your Home Assistant login.
 - **HTTPS served by DoorOpener itself.** Renewed certificates are picked up
@@ -178,12 +183,12 @@ The keypad is at `http://<host>:6532` and the admin panel at
 |---|---|
 | `options.json` | Your configuration (read only) |
 | `users.json` | Users, their doors and rules, and their PINs, hashed with the PIN key |
-| `pin_key` | The PIN key: without it, `users.json` cannot be searched for PINs. **Losing it loses every PIN** |
-| `secret_key` | The key that signs logins, so they survive restarts. Losing it only logs you out |
-| `logs/log.txt` | The audit log: the last 180 days, at most 5 MB |
+| `pin_key` | The PIN key. **Losing it loses every PIN** |
+| `secret_key` | The key that signs logins. Losing it only logs you out |
+| `logs/log.txt` | The audit log |
 
-Everything but `options.json` is readable by its owner (you) only. Back up the
-whole folder: `users.json` without its `pin_key` is useless.
+Everything but `options.json` is readable by you only. Back up the whole folder,
+and read [Your data, keys and backups](#your-data-keys-and-backups) once.
 
 ### Keeping secrets out of options.json
 
@@ -525,6 +530,89 @@ mode sends neither events nor alerts.
 | **HTTPS** | Served by DoorOpener itself; renewed certificates are picked up without a restart; slow clients get 15 seconds per request |
 | **Input limits** | PINs are 4 to 8 digits, and request bodies are capped at 64 KiB |
 | **Headers** | A Content Security Policy allowing only DoorOpener's own scripts, `X-Frame-Options: DENY` (`SAMEORIGIN` for Home Assistant's frame), `nosniff`, a strict referrer policy, and `no-store` for anything that is not a static file |
+
+## Your data, keys and backups
+
+### What DoorOpener keeps
+
+The same files in both modes: in `/data` inside the Home Assistant app, in
+`./data` next to `docker-compose.yml` standalone.
+
+| File | What it holds | If it is lost |
+|---|---|---|
+| `users.json` | Users: their doors, schedules, guest dates and uses, and their PINs as keyed hashes | Every user is gone |
+| `pin_key` | The key mixed into every PIN hash, 64 random hex digits made on the first start | **Every PIN stops working**: DoorOpener refuses to load `users.json` until the key is back |
+| `secret_key` | The key that signs admin logins, the CSRF tokens and the phone cookie | Nothing that matters: admins log in again, phones are recognised again after their next opening |
+| `logs/log.txt` | The audit log: every attempt, with addresses and names, for at most 180 days and 5 MB | Only the history |
+| `options.json` | The configuration. In the app, the Supervisor writes it from the **Configuration** tab | Configure again |
+
+`users.json`, `pin_key`, `secret_key` and the log are readable by their owner
+only. In memory only, and so cleared by a restart: the wrong-PIN blocks and the
+30-second passes behind the door tiles. Only you can restart DoorOpener, so a
+restart is no way around a block.
+
+### How PINs are stored
+
+A PIN is the only thing a user types: there is no user name. So each PIN is
+unique, and DoorOpener finds whose it is by its hash.
+
+1. **scrypt** turns the PIN into a hash that is slow to compute (16 MiB and
+   about 50 ms each), with one random salt for the whole file. One salt, not one
+   per user, is what lets a PIN be found with a single hash. With a salt per
+   user, every attempt would cost one hash per user.
+2. **The PIN key** then keys that hash (HMAC-SHA256).
+   - Why: PINs are short. With scrypt alone, anyone holding a copy of
+     `users.json` could try every 4-digit PIN in minutes and every 6-digit one
+     in hours.
+   - With the key kept apart, a copy of `users.json` alone cannot be searched
+     for PINs at all.
+   - Should the key leak too, scrypt still stands behind it.
+
+Nobody can read a PIN back, the admin included, so pass a PIN on when you
+create it. **🎲 Generate** picks one nobody has and nobody would guess first.
+
+If `pin_key` is missing, or is not the key the PINs were made with,
+DoorOpener says so in its log and refuses to load the users. It never makes a
+new key over existing PINs, which would silently void them all.
+
+### Secrets
+
+| Secret | Home Assistant app | Standalone |
+|---|---|---|
+| Admin password | The app's options, kept by the Supervisor. Optional: without one, the admin panel is only inside Home Assistant | Required: it is the panel's only lock. `options.json`, `DOOROPENER_ADMIN_PASSWORD`, or a file (`_FILE`), optionally as a hash |
+| Home Assistant token | None: the Supervisor provides one | `options.json`, `DOOROPENER_HA_TOKEN`, or a file (`_FILE`) |
+| PIN key | `/data/pin_key` | `./data/pin_key`, or a Docker secret outside `./data` (`DOOROPENER_PIN_KEY_FILE`) |
+| Login-signing key | `/data/secret_key` | `./data/secret_key`, or `FLASK_SECRET_KEY` |
+
+The admin password has at least 12 characters. Stored as a hash
+(`python pins.py hash-password`), it is in no file or variable at all. See
+[Keeping secrets out of options.json](#keeping-secrets-out-of-optionsjson).
+
+### Backups
+
+- **The Home Assistant app:** Home Assistant's backups include the app's
+  `/data`, so `users.json` and `pin_key` travel together, protected by the
+  backup's password. Restore the app from one backup, never `users.json` from
+  one and `pin_key` from another.
+- **Standalone:** back up `./data` as a whole. If you moved the PIN key into a
+  Docker secret, back that secret up separately: a backup of `./data` alone
+  then holds no way to the PINs, and also cannot be restored without the
+  secret.
+- **Backups made before 2.8** hold PINs in plain text. Change those PINs, or
+  delete those backups.
+
+### Moving between the app and standalone
+
+Both modes use the same files. To move, copy `users.json` and `pin_key`
+(`secret_key` too, if you want logins kept) into the other mode's data folder,
+and set up the same door ids. The users and their PINs keep working.
+
+In the app, `/data` lives inside the app's container and is not shared with
+other apps. To reach it, use the Advanced SSH & Web Terminal app with
+protection mode off, for example
+`docker cp addon_<prefix>_dooropener:/data/users.json .` (`docker ps` shows the
+exact name). The other way is to extract the files from a backup of the app,
+which needs the backup's password if it is protected.
 
 ## Upgrading
 
