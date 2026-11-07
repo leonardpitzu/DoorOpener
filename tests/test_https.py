@@ -178,3 +178,89 @@ def test_with_ssl_the_server_speaks_https_and_follows_renewals(server, tmp_path,
     renewed = ca.issue_cert("localhost")
     _install(tmp_path, renewed)
     assert ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate(("127.0.0.1", port))) == _der(renewed)
+
+
+# ---------------------------------------------------------------------------
+# Slow clients are dropped, so they cannot hold the server's threads
+# ---------------------------------------------------------------------------
+def _serve_one(context, sock, outcome):
+    """Accept one TLS connection the way gunicorn does, and read until it ends."""
+    start = time.monotonic()
+    try:
+        conn = context.wrap_socket(sock, server_side=True)
+        conn.setblocking(True)  # gunicorn's switch before it reads a request
+        while conn.recv(1024):
+            pass
+    except OSError as e:
+        outcome["error"] = e
+    outcome["seconds"] = time.monotonic() - start
+
+
+@pytest.fixture
+def quick_deadline(monkeypatch):
+    monkeypatch.setattr(tls, "REQUEST_TIMEOUT", 0.6)
+
+
+def _client_context():
+    client = ssl.create_default_context()
+    client.check_hostname = False
+    client.verify_mode = ssl.CERT_NONE
+    return client
+
+
+@pytest.mark.usefixtures("quick_deadline")
+def test_a_client_that_never_finishes_the_handshake_is_dropped(certs):
+    _, _, certificate = certs
+    server_end, client_end = socket.socketpair()
+    with server_end, client_end:
+        outcome = {}
+        server = threading.Thread(target=_serve_one, args=(certificate.context, server_end, outcome))
+        server.start()
+        client_end.sendall(b"\x16\x03\x01")  # the first bytes of a ClientHello, then nothing
+        server.join(timeout=5)
+    assert isinstance(outcome["error"], ConnectionResetError)
+    assert outcome["seconds"] < 3
+
+
+@pytest.mark.usefixtures("quick_deadline")
+def test_a_client_that_trickles_its_request_is_dropped_at_the_deadline(certs):
+    _, _, certificate = certs
+    server_end, client_end = socket.socketpair()
+    with server_end, client_end:
+        outcome = {}
+        server = threading.Thread(target=_serve_one, args=(certificate.context, server_end, outcome))
+        server.start()
+        with _client_context().wrap_socket(client_end, server_hostname="door.test") as conn:
+            for byte in b"GET / HTTP/1.1\r\nHost: door":  # a byte at a time, never finishing
+                try:
+                    conn.sendall(bytes([byte]))
+                except OSError:
+                    break
+                if not server.is_alive():
+                    break
+                time.sleep(0.1)
+            server.join(timeout=5)
+    assert isinstance(outcome["error"], ConnectionResetError)
+    assert outcome["seconds"] < 3  # the deadline is for the whole request, not each byte
+
+
+def test_a_prompt_client_is_not_affected(certs):
+    _, first, certificate = certs
+    assert _served(certificate.context) == _der(first)
+
+
+@pytest.mark.usefixtures("quick_deadline")
+@pytest.mark.parametrize("sends, logged", [(b"", False), (b"GET / HT", True)], ids=["idle", "stalled"])
+def test_only_a_client_that_stalls_mid_request_is_logged(certs, caplog, sends, logged):
+    _, _, certificate = certs
+    server_end, client_end = socket.socketpair()
+    with server_end, client_end, caplog.at_level(logging.INFO, logger="dooropener"):
+        outcome = {}
+        server = threading.Thread(target=_serve_one, args=(certificate.context, server_end, outcome))
+        server.start()
+        with _client_context().wrap_socket(client_end, server_hostname="door.test") as conn:
+            if sends:
+                conn.sendall(sends)
+            server.join(timeout=5)
+    assert isinstance(outcome["error"], ConnectionResetError)
+    assert ("too slow" in caplog.text) is logged

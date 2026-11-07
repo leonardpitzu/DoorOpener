@@ -1,7 +1,8 @@
-"""PIN rules: validation, comparison and the generator."""
+"""PIN rules: validation, comparison, hashing and the generator."""
 import pytest
 
-from pins import generate_pin, is_valid_pin, secure_equals, trivial_pins
+import pins
+from pins import PIN_HASH_SCHEME, generate_pin, hash_pin, is_valid_pin, secure_equals, trivial_pins
 
 
 @pytest.mark.parametrize("pin", ["1234", "00000000", "482915"])
@@ -40,36 +41,38 @@ def test_trivial_pins():
 def test_generated_pin_is_valid_unused_and_not_trivial(length):
     taken = {"482915", "1357"}
     for _ in range(200):
-        pin = generate_pin(length, taken)
+        pin = generate_pin(length, taken.__contains__)
         assert is_valid_pin(pin) and len(pin) == length
         assert pin not in taken
         assert pin not in trivial_pins(length)
 
 
-def test_generator_finds_the_last_free_pin():
-    free = "4821"
-    taken = {f"{n:04d}" for n in range(10_000)} - {free}
-    assert generate_pin(4, taken) == free
+def test_generator_draws_again_past_trivial_and_taken_pins(monkeypatch):
+    draws = iter([1234, 4821, 5093])  # trivial, taken, free
+    monkeypatch.setattr(pins.secrets, "randbelow", lambda _n: next(draws))
+    assert generate_pin(4, {"4821"}.__contains__) == "5093"
 
 
-def test_generator_reports_an_exhausted_space():
-    taken = {f"{n:04d}" for n in range(10_000)}
-    assert generate_pin(4, taken) is None
-
-
-def test_generator_ignores_pins_of_other_lengths_and_junk():
-    taken = ["12345", "abcd", "١٢٣٤", 1234]
-    assert len(generate_pin(4, taken)) == 4
-
-
-def test_generator_spreads_over_the_free_space():
-    # Only 3 non-trivial PINs are free; each should come up.
-    keep = {"1000", "5050", "9001"}
-    taken = {f"{n:04d}" for n in range(10_000)} - keep
-    assert {generate_pin(4, taken) for _ in range(300)} == keep
+def test_generator_gives_up_when_every_draw_is_taken():
+    assert generate_pin(4, lambda _pin: True, tries=50) is None
 
 
 @pytest.mark.parametrize("length", [3, 9])
 def test_generator_rejects_bad_lengths(length):
     with pytest.raises(ValueError):
-        generate_pin(length, set())
+        generate_pin(length, lambda _pin: False)
+
+
+def test_hashes_depend_on_pin_and_salt():
+    assert hash_pin("1234", b"salt") == hash_pin("1234", b"salt")
+    assert hash_pin("1234", b"salt") != hash_pin("1235", b"salt")
+    assert hash_pin("1234", b"salt") != hash_pin("1234", b"pepper")
+
+
+def test_the_hash_costs_what_its_scheme_name_says(monkeypatch):
+    # conftest makes hashing cheap for speed; the real parameters are checked here.
+    # Changing them without renaming the scheme would orphan every stored PIN.
+    monkeypatch.undo()
+    cost = pins._SCRYPT
+    assert cost["n"] == 2**14
+    assert PIN_HASH_SCHEME == f"scrypt-{cost['n']}-{cost['r']}-{cost['p']}"

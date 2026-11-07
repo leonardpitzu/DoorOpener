@@ -97,12 +97,16 @@ def test_generate_pin_rejects_bad_lengths(client, length):
 
 def test_generate_pin_reports_a_full_space(client, monkeypatch):
     from users_store import UsersStore
-    monkeypatch.setattr(UsersStore, "all_pins", lambda self: {f"{n:04d}" for n in range(10_000)})
+    monkeypatch.setattr(UsersStore, "pin_taken", lambda self, pin, exclude=None: True)
     _login_as_of(client, timedelta(0))
     assert client.get("/admin/generate-pin?length=4").status_code == 409
 
 
-def test_the_pins_to_avoid_include_disabled_users():
+def test_generated_pins_avoid_disabled_users(client, monkeypatch):
     import app as app_module
-    app_module.users_store.create_user("bob", "1000", active=False)
-    assert "1000" in app_module.users_store.all_pins()
+    import pins
+    app_module.users_store.create_user("bob", "4821", active=False)
+    draws = iter([4821, 5093])
+    monkeypatch.setattr(pins.secrets, "randbelow", lambda _n: next(draws))
+    _login_as_of(client, timedelta(0))
+    assert client.get("/admin/generate-pin?length=4").get_json()["pin"] == "5093"

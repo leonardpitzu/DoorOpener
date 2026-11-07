@@ -49,7 +49,7 @@ def test_admin_users_list_empty(mock_users_store, monkeypatch):
 def test_admin_users_list_with_json_users(mock_users_store, monkeypatch):
     mock_users_store.create_user("alice", "1234")
     mock_users_store.create_user("bob", "5678")
-    mock_users_store.touch_user("alice")
+    mock_users_store.record_use("alice")
 
     c = client_app()
     _admin_session(c)
@@ -187,8 +187,8 @@ def test_user_management_ui_data_structure(mock_users_store):
     mock_users_store.create_user("active_user", "1111")
     mock_users_store.create_user("inactive_user", "2222")
     mock_users_store.update_user("inactive_user", active=False)
-    mock_users_store.touch_user("active_user")
-    mock_users_store.touch_user("active_user")
+    mock_users_store.record_use("active_user")
+    mock_users_store.record_use("active_user")
 
     c = client_app()
     _admin_session(c)

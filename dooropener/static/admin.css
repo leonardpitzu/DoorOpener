@@ -1,0 +1,369 @@
+body {
+    font-family: 'Arial', sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+    position: relative;
+    overflow-x: hidden;
+    min-height: 100vh;
+}
+body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 0;
+    background: url('background.webp') no-repeat center center fixed;
+    background-size: cover;
+    opacity: 0.92;
+    pointer-events: none;
+}
+.container {
+    position: relative;
+    z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    background: linear-gradient(135deg, rgba(255,255,255,0.4), rgba(255,255,255,0.2));
+    box-shadow: 
+        0 8px 32px 0 rgba(31, 38, 135, 0.2),
+        0 2px 16px 0 rgba(255, 255, 255, 0.3),
+        inset 0 1px 0 0 rgba(255, 255, 255, 0.5);
+    border-radius: 20px;
+    backdrop-filter: blur(15px) saturate(1.3);
+    -webkit-backdrop-filter: blur(15px) saturate(1.3);
+    border: 1px solid rgba(255,255,255,0.4);
+    padding: 2rem;
+    overflow: hidden;
+}
+.container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+    border-radius: 20px 20px 0 0;
+}
+h1 {
+    color: rgba(0,0,0,0.8);
+    margin-bottom: 2rem;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    text-align: center;
+}
+.controls {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+/* Tabs */
+.tabs { display: flex; gap: 8px; margin: 0 0 1rem 0; }
+.tab-btn {
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.35);
+    background: linear-gradient(135deg, rgba(255,255,255,0.35), rgba(255,255,255,0.20));
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+    font-weight: 600;
+    color: rgba(0,0,0,0.8);
+}
+.tab-btn.active {
+    background: linear-gradient(135deg, #1976d2, #1565c0);
+    color: white;
+    border-color: rgba(255,255,255,0.6);
+    box-shadow: 0 4px 16px rgba(21,101,192,0.25);
+}
+.tab-panel { display: block; }
+/* Card list for small screens */
+.log-cards { display: none; }
+.log-card {
+    background: rgba(255,255,255,0.25);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    padding: 12px;
+}
+.log-card .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.badge-status { 
+    display: inline-block; 
+    padding: 2px 8px; 
+    border-radius: 999px; 
+    font-size: 0.85em; 
+    font-weight: 700; 
+    letter-spacing: 0.3px;
+}
+.badge-status.status-success { background: rgba(76, 175, 80, 0.15); color: #2e7d32; border: 1px solid rgba(76, 175, 80, 0.35); }
+.badge-status.status-failure { background: rgba(244, 67, 54, 0.15); color: #c62828; border: 1px solid rgba(244, 67, 54, 0.35); }
+.log-card .card-body { display: grid; gap: 6px; }
+.card-row { display: grid; grid-template-columns: 32% 1fr; gap: 8px; }
+.card-row .label { font-weight: 600; color: rgba(0,0,0,0.7); }
+.card-row .value { color: rgba(0,0,0,0.85); word-break: break-word; }
+/* Responsive table wrapper */
+.table-responsive {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 12px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.15);
+}
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+label {
+    font-weight: 600;
+    color: rgba(0,0,0,0.8);
+}
+select, input {
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.4);
+    background: rgba(255,255,255,0.3);
+    backdrop-filter: blur(10px);
+    color: rgba(0,0,0,0.8);
+    font-weight: 500;
+}
+.refresh-btn {
+    padding: 8px 16px;
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+.refresh-btn:hover {
+    background: linear-gradient(135deg, #45a049, #3e8e41);
+    transform: translateY(-1px);
+}
+.refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: progress;
+    transform: none;
+}
+.version-tag {
+    font-size: 0.45em;
+    font-weight: 600;
+    color: rgba(0,0,0,0.45);
+    vertical-align: middle;
+    margin-left: 0.4em;
+}
+/* Modal form fields */
+.modal-body input,
+.modal-body select {
+    box-sizing: border-box;  /* width: 100% includes the padding */
+}
+.field-label {
+    display: block;
+    margin: 10px 0 4px 2px;
+}
+.pin-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.pin-row input {
+    flex: 1 1 140px;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+}
+.generate-btn,
+.generate-btn:hover {
+    background: linear-gradient(135deg, #5e35b1, #4527a0);
+    white-space: nowrap;
+}
+/* Toasts */
+#toast-container {
+    position: fixed;
+    z-index: 9999;
+    right: 2vw;
+    bottom: 2vh;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+    max-width: 90vw;
+    pointer-events: none;
+}
+.toast {
+    min-width: 180px;
+    max-width: 320px;
+    margin-top: 0.5rem;
+    background: #333;
+    color: #fff;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+    opacity: 0;
+    transform: translateY(40px);
+    transition: opacity 0.4s, transform 0.4s;
+    font-size: 1rem;
+    pointer-events: auto;
+    word-break: break-word;
+}
+.toast.success { background: #27ae60; }
+.toast.error { background: #c0392b; }
+.toast.show { opacity: 1; transform: translateY(0); }
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: rgba(255,255,255,0.2);
+    border-radius: 12px;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    table-layout: auto;
+    min-width: 720px; /* ensure columns visible and allow horizontal scroll */
+}
+.log-table th {
+    background: rgba(255,255,255,0.3);
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    color: rgba(0,0,0,0.8);
+    border-bottom: 1px solid rgba(255,255,255,0.3);
+}
+.log-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.2);
+    color: rgba(0,0,0,0.8);
+    word-break: break-word;
+    vertical-align: top;
+}
+.log-table tr:hover {
+    background: rgba(255,255,255,0.1);
+}
+.status-success {
+    color: #2e7d32;
+    font-weight: 600;
+}
+.status-failure {
+    color: #c62828;
+    font-weight: 600;
+}
+.no-logs {
+    text-align: center;
+    padding: 2rem;
+    color: rgba(0,0,0,0.6);
+    font-style: italic;
+}
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+        margin: 10px;
+    }
+    .controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .control-group {
+        justify-content: space-between;
+    }
+    .log-table { font-size: 0.95rem; }
+    /* Hide table on phones, use card list */
+    .table-responsive { display: none; }
+    .log-cards { display: grid; gap: 12px; }
+    .log-table th,
+    .log-table td {
+        padding: 8px;
+    }
+}
+
+/* Card-style table for very small screens */
+@media (max-width: 520px) {
+    .log-table,
+    .log-table thead,
+    .log-table tbody,
+    .log-table th,
+    .log-table td,
+    .log-table tr { display: block; width: 100%; }
+
+    .log-table thead { display: none; }
+    .log-table tr { margin: 0 0 12px 0; border: 1px solid rgba(255,255,255,0.25); border-radius: 10px; background: rgba(255,255,255,0.25); }
+    .log-table td { position: relative; padding-left: 44%; min-height: 42px; }
+    .log-table td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 12px;
+        top: 10px;
+        width: 38%;
+        font-weight: 600;
+        color: rgba(0,0,0,0.7);
+        white-space: normal;
+    }
+    .log-table td.no-logs { padding-left: 12px; }
+}
+
+/* Compact mode: reduced spacing and slightly smaller text */
+#dashboard.compact .log-table { font-size: 0.85rem; }
+#dashboard.compact .log-table th,
+#dashboard.compact .log-table td { padding: 6px 8px; }
+@media (max-width: 520px) {
+    #dashboard.compact .log-table td { padding-left: 38%; min-height: 36px; }
+    #dashboard.compact .log-table td::before { left: 10px; width: 34%; font-size: 0.9em; }
+}
+/* Compact mode for cards */
+#dashboard.compact .log-card { padding: 8px; }
+#dashboard.compact .card-row { grid-template-columns: 36% 1fr; gap: 6px; }
+
+/* Access rules in the user dialog */
+.access {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.45);
+}
+.access summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.8);
+}
+.access-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.access-row > div { flex: 1 1 170px; }
+.access-row input { width: 100%; }
+.days, .hours {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+.days label, .one-time {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+}
+.days input, .one-time input { width: auto; }
+.one-time { margin-top: 12px; }
+.hint {
+    font-size: 0.85em;
+    font-weight: 400;
+    color: rgba(0, 0, 0, 0.6);
+}
+
+/* Signed in through Home Assistant, and the notice pages */
+.ha-user {
+    font-size: 0.9em;
+    color: rgba(0, 0, 0, 0.6);
+}
+.notice {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: rgba(0, 0, 0, 0.75);
+}

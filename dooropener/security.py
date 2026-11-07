@@ -156,12 +156,16 @@ def client_identity() -> tuple[str, str]:
     return request.remote_addr or "unknown", session_id
 
 
-def add_security_headers(response, csp_nonce: str | None = None):
-    """Attach hardening headers to every response."""
-    script_src = f"'self' 'nonce-{csp_nonce}'" if csp_nonce else "'self'"
+def add_security_headers(response, framable: bool = False):
+    """Attach hardening headers to every response.
+
+    Scripts load only from DoorOpener itself, never inline. *framable* lets the
+    same origin embed the page, which Home Assistant does with ingress pages.
+    """
+    frame_ancestors = "'self'" if framable else "'none'"
     response.headers.update({
         "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
+        "X-Frame-Options": "SAMEORIGIN" if framable else "DENY",
         "Referrer-Policy": "strict-origin-when-cross-origin",
         "Permissions-Policy": (
             "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
@@ -173,12 +177,13 @@ def add_security_headers(response, csp_nonce: str | None = None):
         "Cross-Origin-Opener-Policy": "same-origin",
         "Content-Security-Policy": (
             "default-src 'self'; "
-            f"script-src {script_src}; "
+            "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self'; "
             "connect-src 'self'; "
-            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            "object-src 'none'; base-uri 'none'; "
+            f"frame-ancestors {frame_ancestors}"
         ),
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",

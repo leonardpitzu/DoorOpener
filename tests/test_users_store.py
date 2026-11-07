@@ -1,11 +1,22 @@
-import pytest
 import json
 import os
 import tempfile
-from unittest.mock import patch
 from datetime import datetime, timezone
+from unittest.mock import patch
 
-from users_store import UserConflict, UserNotFound, UsersStore, UsersStoreError, _now_iso
+import pytest
+
+from users_store import (
+    DISABLED, KEEP, NO_MATCH, InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError, _now_iso,
+)
+
+NOW = datetime(2026, 11, 11, 12, 0)  # a Wednesday, noon at the door
+
+
+def _who(store, pin, now=NOW):
+    """The user a PIN opens the door for, or None."""
+    user, refusal = store.authorize(pin, now)
+    return user if refusal is None else None
 
 
 @pytest.fixture
@@ -94,7 +105,7 @@ def test_update_user_keeps_own_pin(users_store):
 
     users_store.update_user("alice", pin="1234", active=False)
 
-    assert users_store.lookup_pin("1234") is None  # inactive -> not in active map
+    assert users_store.authorize("1234", NOW) == ("alice", DISABLED)
 
 
 def test_update_nonexistent_user(users_store):
@@ -123,7 +134,7 @@ def test_touch_user_new_user(users_store):
     """Test touching a user increments times_used and updates last_used_at."""
     users_store.create_user("testuser", "1234")
 
-    users_store.touch_user("testuser")
+    users_store.record_use("testuser")
 
     users = users_store.list_users()["users"]
     user = users[0]
@@ -135,9 +146,9 @@ def test_touch_user_multiple_times(users_store):
     """Test touching a user multiple times increments counter."""
     users_store.create_user("testuser", "1234")
 
-    users_store.touch_user("testuser")
-    users_store.touch_user("testuser")
-    users_store.touch_user("testuser")
+    users_store.record_use("testuser")
+    users_store.record_use("testuser")
+    users_store.record_use("testuser")
 
     users = users_store.list_users()["users"]
     user = users[0]
@@ -149,7 +160,7 @@ def test_touch_user_backward_compatibility(users_store):
     # Manually create a user without times_used field (simulating old data)
     users_store._ensure_loaded()
     users_store.data["users"]["olduser"] = {
-        "pin": "1234",
+        "pin_hash": "00",
         "active": True,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
@@ -157,7 +168,7 @@ def test_touch_user_backward_compatibility(users_store):
     }
     users_store._save_atomic()
 
-    users_store.touch_user("olduser")
+    users_store.record_use("olduser")
 
     users = users_store.list_users()["users"]
     user = next(u for u in users if u["username"] == "olduser")
@@ -167,7 +178,7 @@ def test_touch_user_backward_compatibility(users_store):
 def test_touch_nonexistent_user(users_store):
     """Test touching a user that doesn't exist."""
     # Should not raise an exception
-    users_store.touch_user("nonexistent")
+    users_store.record_use("nonexistent")
 
     users = users_store.list_users()["users"]
     assert len(users) == 0
@@ -184,10 +195,10 @@ def test_user_exists(users_store):
     assert not users_store.user_exists("testuser")
 
 
-def test_list_users_with_pins(users_store):
-    """Test listing users includes times_used for JSON users."""
+def test_list_users_counts_uses(users_store):
+    """Listing users includes times_used."""
     users_store.create_user("jsonuser", "1234")
-    users_store.touch_user("jsonuser")
+    users_store.record_use("jsonuser")
 
     result = users_store.list_users()
 
@@ -197,14 +208,13 @@ def test_list_users_with_pins(users_store):
     assert user["times_used"] == 1
 
 
-def test_list_users_without_pins(users_store):
-    """Test listing users returns only JSON store users."""
+def test_list_users_never_includes_pins(users_store):
     users_store.create_user("jsonuser", "1234")
 
-    result = users_store.list_users(include_pins=False)
+    (user,) = users_store.list_users()["users"]
 
-    assert len(result["users"]) == 1
-    assert result["users"][0]["username"] == "jsonuser"
+    assert user["username"] == "jsonuser"
+    assert not {"pin", "pin_hash"} & set(user)
 
 
 def test_file_persistence(temp_users_file):
@@ -212,7 +222,7 @@ def test_file_persistence(temp_users_file):
     # Create user with first instance
     store1 = UsersStore(temp_users_file)
     store1.create_user("testuser", "1234")
-    store1.touch_user("testuser")
+    store1.record_use("testuser")
 
     # Load with second instance
     store2 = UsersStore(temp_users_file)
@@ -257,7 +267,7 @@ def test_json_schema_validation(users_store):
     """Test that the JSON schema is maintained correctly."""
     users_store.create_user("user1", "1234")
     users_store.create_user("user2", "5678")
-    users_store.touch_user("user1")
+    users_store.record_use("user1")
 
     # Verify the structure matches expected schema
     with open(users_store.path, "r") as f:
@@ -268,7 +278,7 @@ def test_json_schema_validation(users_store):
 
     for username, user_data in data["users"].items():
         assert isinstance(username, str)
-        assert "pin" in user_data
+        assert "pin_hash" in user_data and "pin" not in user_data
         assert "active" in user_data
         assert "created_at" in user_data
         assert "updated_at" in user_data
@@ -292,7 +302,7 @@ def test_corrupt_file_raises_and_preserves_data(temp_users_file):
 
     # Every entry point that loads must raise instead of silently emptying.
     with pytest.raises(UsersStoreError):
-        store.lookup_pin("1234")
+        store.authorize("1234", NOW)
     with pytest.raises(UsersStoreError):
         store.create_user("bob", "5678")
 
@@ -304,7 +314,7 @@ def test_corrupt_file_raises_and_preserves_data(temp_users_file):
     assert store._loaded is False
     with open(temp_users_file, "w", encoding="utf-8") as f:
         json.dump({"users": {"alice": {"pin": "1234", "active": True}}}, f)
-    assert store.lookup_pin("1234") == "alice"
+    assert _who(store, "1234") == "alice"
 
 
 def test_wrong_shape_file_raises(temp_users_file):
@@ -314,7 +324,7 @@ def test_wrong_shape_file_raises(temp_users_file):
 
     store = UsersStore(temp_users_file)
     with pytest.raises(UsersStoreError):
-        store.lookup_pin("1234")
+        store.authorize("1234", NOW)
 
 
 def test_empty_file_treated_as_empty_store(temp_users_file):
@@ -323,9 +333,9 @@ def test_empty_file_treated_as_empty_store(temp_users_file):
         f.write("   \n")
 
     store = UsersStore(temp_users_file)
-    assert store.lookup_pin("1234") is None
+    assert store.authorize("1234", NOW) == (None, NO_MATCH)
     store.create_user("alice", "1234")
-    assert store.lookup_pin("1234") == "alice"
+    assert _who(store, "1234") == "alice"
 
 
 def test_save_cross_device_path_writes_correctly(temp_users_file):
@@ -337,9 +347,7 @@ def test_save_cross_device_path_writes_correctly(temp_users_file):
     with patch("users_store.os.replace", side_effect=OSError("cross-device")):
         store.update_user("alice", pin="5678")
 
-    with open(temp_users_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    assert data["users"]["alice"]["pin"] == "5678"
+    assert _who(UsersStore(temp_users_file), "5678") == "alice"
     assert not os.path.exists(temp_users_file + ".bak")
 
 
@@ -375,3 +383,85 @@ def test_save_recovers_from_cross_device_failure(temp_users_file):
     # Original content must survive intact and no backup left behind.
     assert open(temp_users_file, "r", encoding="utf-8").read() == original
     assert not os.path.exists(temp_users_file + ".bak")
+
+
+# ---------------------------------------------------------------------------
+# Hashed PINs
+# ---------------------------------------------------------------------------
+def test_pins_are_never_written_in_plain_text(users_store):
+    users_store.create_user("alice", "482915")
+    with open(users_store.path, encoding="utf-8") as f:
+        assert "482915" not in f.read()
+    assert _who(users_store, "482915") == "alice"
+    assert _who(users_store, "482916") is None
+
+
+def test_plain_text_pins_from_older_versions_are_converted(temp_users_file):
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        json.dump({"users": {"alice": {"pin": "1234", "active": True},
+                             "bob": {"pin": "5678", "active": False},
+                             "junk": {"pin": "12ab", "active": True}}}, f)
+
+    store = UsersStore(temp_users_file)
+    assert _who(store, "1234") == "alice"
+    assert store.authorize("5678", NOW) == ("bob", DISABLED)
+
+    with open(temp_users_file, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert not any("pin" in meta for meta in saved["users"].values())
+    assert "pin_hash" not in saved["users"]["junk"]  # an unusable PIN is dropped
+    assert _who(UsersStore(temp_users_file), "1234") == "alice"  # and it all survives a reload
+
+
+def test_an_unknown_hashing_scheme_is_refused(temp_users_file):
+    with open(temp_users_file, "w", encoding="utf-8") as f:
+        json.dump({"pin_hashing": {"scheme": "argon2-something", "salt": "00"}, "users": {}}, f)
+    with pytest.raises(UsersStoreError, match="hashing scheme"):
+        UsersStore(temp_users_file).authorize("1234", NOW)
+
+
+def test_pin_taken_covers_disabled_users_but_not_the_owner(users_store):
+    users_store.create_user("alice", "1234", active=False)
+    assert users_store.pin_taken("1234")
+    assert not users_store.pin_taken("1234", exclude="alice")
+    assert not users_store.pin_taken("4321")
+
+
+# ---------------------------------------------------------------------------
+# Access rules and one-time PINs
+# ---------------------------------------------------------------------------
+def test_access_rules_are_stored_and_listed(users_store):
+    users_store.create_user("guest", "2468", access_rules={"valid_until": "2026-11-12T18:00"})
+    (user,) = users_store.list_users()["users"]
+    assert user["access"]["valid_until"] == "2026-11-12T18:00"
+    assert users_store.authorize("2468", datetime(2026, 11, 13, 9, 0)) == ("guest", "EXPIRED")
+
+
+def test_update_keeps_or_clears_access_rules(users_store):
+    users_store.create_user("guest", "2468", access_rules={"one_time": True})
+    users_store.update_user("guest", pin="1357")
+    assert users_store.list_users()["users"][0]["access"]["one_time"] is True
+    users_store.update_user("guest", access_rules=KEEP)
+    assert users_store.list_users()["users"][0]["access"] is not None
+    users_store.update_user("guest", access_rules=None)
+    assert users_store.list_users()["users"][0]["access"] is None
+
+
+def test_invalid_access_rules_are_refused(users_store):
+    with pytest.raises(InvalidUser, match="days"):
+        users_store.create_user("guest", "2468", access_rules={"days": []})
+    assert users_store.list_users()["users"] == []
+
+
+def test_a_one_time_pin_is_deactivated_by_its_use(users_store):
+    users_store.create_user("courier", "8642", access_rules={"one_time": True})
+    assert users_store.record_use("courier") is True
+    assert users_store.authorize("8642", NOW) == ("courier", DISABLED)
+    # Written at once, not left for the next usage flush.
+    assert _who(UsersStore(users_store.path), "8642") is None
+
+
+def test_an_ordinary_pin_survives_its_use(users_store):
+    users_store.create_user("alice", "1234")
+    assert users_store.record_use("alice") is False
+    assert _who(users_store, "1234") == "alice"

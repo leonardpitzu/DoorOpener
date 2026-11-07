@@ -61,15 +61,18 @@ def client():
 def reset_state(monkeypatch):
     """Fresh rate limits, an empty users store and no CSRF check for every test."""
     import app as app_module
+    import pins
     from security import RateLimiter
 
+    # A cheap PIN hash keeps the suite fast; test_pins checks the real cost.
+    monkeypatch.setitem(pins._SCRYPT, "n", 2**4)
     monkeypatch.setattr(app_module, "rate_limiter", RateLimiter())
     # Dedicated CSRF tests switch it back on.
     monkeypatch.setitem(app_module.app.config, "CSRF_ENABLED", False)
     # Reset users_store to empty (tests add users as needed)
     app_module.users_store.data = {"users": {}}
     app_module.users_store._loaded = True
-    app_module.users_store._pin_cache = None
+    app_module.users_store._index = None
     app_module.users_store._touch_dirty = False
     app_module.users_store._last_touch_flush = 0.0
     # Reset battery cache

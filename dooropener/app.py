@@ -3,12 +3,20 @@
 
 This module holds the routes and the request plumbing. The rest lives next door:
 settings in ``config``, brute-force protection in ``security``, PIN rules in
-``pins``, users in ``users_store``, the audit trail in ``audit`` and the Home
-Assistant calls in ``ha_client``.
+``pins``, when a PIN works in ``access``, users in ``users_store``, the audit
+trail in ``audit``, the Home Assistant calls in ``ha_client`` and the admin panel
+in Home Assistant's sidebar in ``ingress``.
+
+The admin panel answers in two places. Through ingress, Home Assistant has
+already logged the user in, so a Home Assistant administrator gets straight in
+and no cookie is involved. On DoorOpener's own port, it takes the admin password,
+and is not offered at all when none is set (allowed only in an app).
 """
 
 import atexit
 import gzip
+import hashlib
+import hmac
 import logging
 import math
 import os
@@ -17,17 +25,18 @@ import threading
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, g, jsonify, render_template, request, send_from_directory, session
+from flask import Flask, jsonify, render_template, request, send_from_directory, session, url_for
 from werkzeug.exceptions import InternalServerError, RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
+import ingress
 from audit import AuditLog
 from config import get_current_time
 from ha_client import HAClient, HAError
 from pins import DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, generate_pin, is_valid_pin, secure_equals
 from security import RateLimiter, add_security_headers, client_identity
-from users_store import InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
+from users_store import KEEP, InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
 
 # Stamped into the image from config.yaml, which the Supervisor passes to the
 # build as BUILD_VERSION.
@@ -67,7 +76,7 @@ ha_client = HAClient()
 users_store = UsersStore(USERS_STORE_PATH)
 audit_log = AuditLog(os.path.join(LOG_DIR, "log.txt"))
 
-# Persist any coalesced usage counters on shutdown (touch_user batches writes).
+# Persist any coalesced usage counters on shutdown (record_use batches writes).
 atexit.register(users_store.flush_touches)
 
 if config.random_secret_warning:
@@ -76,51 +85,77 @@ if config.test_mode:
     logger.warning("TEST MODE ENABLED: the door will NOT open. Disable test_mode before production use.")
 
 
+def start_background_services() -> None:
+    """Run in each gunicorn worker once the app is loaded (see gunicorn.conf.py)."""
+    _in_background(ha_client.check_connection)
+    if config.ha_app:
+        ingress.serve(app)
+
+
 # ---------------------------------------------------------------------------
 # Request plumbing
 # ---------------------------------------------------------------------------
+def _visitor() -> ingress.Visitor | None:
+    """The Home Assistant user, when the request came through the sidebar (ingress)."""
+    return ingress.visitor(request.environ)
+
+
+@app.context_processor
+def _template_helpers():
+    # Asset URLs carry the version, so browsers may keep them until the next release.
+    return {"asset": lambda name: url_for("static", filename=name, v=APP_VERSION), "app_version": APP_VERSION}
+
+
 @app.before_request
 def _prepare_request():
-    """A fresh CSP nonce for every request, and a CSRF token for every session."""
-    g.csp_nonce = secrets.token_urlsafe(16)
-    session.setdefault("_csrf_token", secrets.token_hex(32))
+    """A CSRF token for every session (ingress requests have no session; see _csrf_token)."""
+    if _visitor() is None:
+        session.setdefault("_csrf_token", secrets.token_hex(32))
 
 
 @app.after_request
 def _finish_response(response):
-    response = add_security_headers(response, csp_nonce=getattr(g, "csp_nonce", None))
-    # Responses default to no-store. Static assets may sit in the cache; the
-    # service worker itself must always be revalidated.
-    if request.path == "/service-worker.js":
-        response.headers["Cache-Control"] = "no-cache"
-        response.headers.pop("Pragma", None)
-    elif request.path.startswith(("/static/", "/manifest.webmanifest")):
-        response.headers["Cache-Control"] = "public, max-age=3600"
+    # Home Assistant shows the ingress pages in a frame of its own (same origin).
+    response = add_security_headers(response, framable=_visitor() is not None)
+    # Responses default to no-store. Static files may be cached: for good when the
+    # URL names the version, for a day otherwise. The service worker itself is
+    # always revalidated.
+    cache = None
+    if request.endpoint == "service_worker":
+        cache = "no-cache"
+    elif request.endpoint == "static":
+        cache = "public, max-age=31536000, immutable" if request.args.get("v") else "public, max-age=86400"
+    elif request.endpoint == "manifest_file":
+        cache = "public, max-age=3600"
+    if cache:
+        response.headers["Cache-Control"] = cache
         response.headers.pop("Pragma", None)
     return _gzip(response)
 
 
-def _gzip(response):
-    """Compress text responses over 512 bytes for clients that accept gzip.
+_COMPRESSIBLE = ("text/", "application/json", "javascript", "manifest+json", "image/svg+xml")
 
-    Leaves direct-passthrough (send_file) responses alone: their body is a lazy
-    file wrapper, and reading it here would break the static routes.
-    """
-    compressible = any(t in (response.content_type or "") for t in ("text/", "application/json", "javascript"))
+
+def _gzip(response):
+    """Compress text responses over 512 bytes, static files included, for clients that accept gzip."""
     if (
         response.status_code != 200
-        or response.direct_passthrough
-        or not compressible
-        or (response.content_length or 0) <= 512
+        or "Content-Encoding" in response.headers
+        or not any(t in (response.content_type or "") for t in _COMPRESSIBLE)
         or "gzip" not in request.headers.get("Accept-Encoding", "")
     ):
         return response
+    # A static file comes as a lazy file wrapper; the text ones are small enough to read.
+    response.direct_passthrough = False
     data = response.get_data()
     compressed = gzip.compress(data, compresslevel=6)
-    if len(compressed) < len(data):
+    if len(data) > 512 and len(compressed) < len(data):
         response.set_data(compressed)  # also updates Content-Length
         response.headers["Content-Encoding"] = "gzip"
         response.headers["Vary"] = "Accept-Encoding"
+        etag = response.headers.get("ETag")
+        if etag and etag.endswith('"'):  # a different body needs a different tag
+            response.headers["ETag"] = etag[:-1] + '-gzip"'
     return response
 
 
@@ -161,26 +196,51 @@ def _internal_error(_e):
     return _error("Internal server error", 500)
 
 
+def _csrf_token() -> str:
+    """The token pages send back in X-CSRF-Token.
+
+    Through ingress there is no session cookie, so the token is bound to the
+    ingress session's path instead, which only that browser knows.
+    """
+    if _visitor() is not None:
+        return hmac.new(app.secret_key.encode(), request.script_root.encode(), hashlib.sha256).hexdigest()
+    return session.get("_csrf_token", "")
+
+
 def csrf_protected(view):
-    """Reject the request unless X-CSRF-Token matches the session's token."""
+    """Reject the request unless X-CSRF-Token matches the expected token."""
     @wraps(view)
     def wrapper(*args, **kwargs):
         if app.config["CSRF_ENABLED"]:
             token = request.headers.get("X-CSRF-Token", "")
-            if not token or not secure_equals(token, session.get("_csrf_token", "")):
+            expected = _csrf_token()
+            if not token or not expected or not secure_equals(token, expected):
                 return _error("Invalid or missing CSRF token", 403)
         return view(*args, **kwargs)
     return wrapper
 
 
 def require_admin(view):
-    """Reject the request with 401 unless it comes from a valid admin session."""
+    """Reject the request unless it may use the admin panel (see _admin_refusal)."""
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not _admin_session_valid():
-            return _error("Authentication required", 401)
+        refusal = _admin_refusal()
+        if refusal is not None:
+            return refusal
         return view(*args, **kwargs)
     return wrapper
+
+
+def _admin_refusal():
+    """None for a request that may use the admin panel, else the error to answer it with."""
+    visitor = _visitor()
+    if visitor is not None:
+        return None if visitor.admin else _error("For Home Assistant administrators only", 403)
+    if not config.public_admin:
+        return _error("The admin panel is in Home Assistant", 404)
+    if not _admin_session_valid():
+        return _error("Authentication required", 401)
+    return None
 
 
 def _admin_session_valid() -> bool:
@@ -247,6 +307,10 @@ def _in_background(fn, *args) -> None:
 
 
 def _audit_admin(status: str, details: str) -> None:
+    visitor = _visitor()
+    if visitor is not None:
+        audit_log.record("Home Assistant", "ingress", f"ADMIN ({visitor.name})", status, details)
+        return
     ip, session_id = client_identity()
     audit_log.record(ip, session_id, "ADMIN", status, details)
 
@@ -256,11 +320,13 @@ def _audit_admin(status: str, details: str) -> None:
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
+    if _visitor() is not None:  # the sidebar opens straight onto the admin panel
+        return admin()
     return render_template(
         "index.html",
-        csp_nonce=g.csp_nonce,
-        csrf_token=session["_csrf_token"],
+        csrf_token=_csrf_token(),
         battery_enabled=bool(config.battery_entity),
+        public_admin=config.public_admin,
     )
 
 
@@ -302,15 +368,12 @@ def open_door():
     if not is_valid_pin(pin):
         return _wrong_pin(ip, session_id, "INVALID_FORMAT", "Invalid PIN format", 400)
 
-    user = users_store.lookup_pin(pin)
-    if user is None:
-        # A disabled account's PIN is answered and counted like any other wrong
-        # PIN: anything else would let a stranger test, unthrottled, which PINs
-        # exist. Only the audit log names the account.
-        disabled = users_store.find_disabled_user_by_pin(pin)
-        if disabled:
-            return _wrong_pin(ip, session_id, "DISABLED", "Invalid PIN", 401, user=disabled)
-        return _wrong_pin(ip, session_id, "AUTH_FAILURE", "Invalid PIN", 401)
+    user, refusal = users_store.authorize(pin, get_current_time())
+    if refusal:
+        # A disabled PIN, or one outside its access rules, is answered and counted
+        # like any wrong PIN: anything else would let a stranger test, unthrottled,
+        # which PINs exist. Only the audit log says whose it was and why.
+        return _wrong_pin(ip, session_id, refusal, "Invalid PIN", 401, user=user or "UNKNOWN")
 
     rate_limiter.pin_succeeded(ip, session_id)
     return _open_door_for(user, ip, session_id)
@@ -341,20 +404,24 @@ def _open_door_for(user: str, ip: str, session_id: str):
             logger.error("Opening the door failed: %s", e)
             audit_log.record(ip, session_id, user, "FAILURE", str(e))
             return _error("Failed to contact Home Assistant", 502)
-    audit_log.record(ip, session_id, user, "SUCCESS", f"Door opened{suffix}")
-    _touch(user)
+    used_up = _record_use(user)
+    audit_log.record(ip, session_id, user, "SUCCESS",
+                     f"Door opened{suffix}" + ("; one-time PIN used up" if used_up else ""))
+    if not config.test_mode:
+        _in_background(ha_client.door_opened, user)
     return jsonify({
         "status": "success",
         "message": f"Door open command sent{suffix}.\nWelcome home, {user.capitalize()}!",
     })
 
 
-def _touch(username: str) -> None:
-    """Count a use. Bookkeeping only, so it never fails a door that already opened."""
+def _record_use(username: str) -> bool:
+    """Count a use; True if it used up a one-time PIN. Never fails a door that already opened."""
     try:
-        users_store.touch_user(username)
+        return users_store.record_use(username)
     except Exception as e:
         logger.warning("Could not record a use for %s: %s", username, e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -362,17 +429,34 @@ def _touch(username: str) -> None:
 # ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin():
+    visitor = _visitor()
+    if visitor is not None and not visitor.admin:
+        return render_template("admin.html", notice="DoorOpener's admin panel is for Home Assistant "
+                                                    "administrators."), 403
+    if visitor is None and not config.public_admin:
+        return render_template("admin.html", notice="The admin panel is in Home Assistant: open "
+                                                    "DoorOpener in its sidebar."), 404
     return render_template(
         "admin.html",
-        csp_nonce=g.csp_nonce,
-        csrf_token=session["_csrf_token"],
-        app_version=APP_VERSION,
-        is_authenticated=_admin_session_valid(),
+        csrf_token=_csrf_token(),
+        ha_user=visitor.name if visitor else None,
+        is_authenticated=visitor is not None or _admin_session_valid(),
         test_mode=config.test_mode,
     )
 
 
+def _password_login_only(view):
+    """The password login exists only on DoorOpener's own port, and only with a password set."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if _visitor() is not None or not config.public_admin:
+            return _error("Not available here", 404)
+        return view(*args, **kwargs)
+    return wrapper
+
+
 @app.route("/admin/auth", methods=["POST"])
+@_password_login_only
 @csrf_protected
 def admin_auth():
     ip, session_id = client_identity()
@@ -402,6 +486,7 @@ def admin_auth():
 
 
 @app.route("/admin/check-auth")
+@_password_login_only
 def admin_check_auth():
     if _admin_session_valid():
         return jsonify({"authenticated": True, "login_time": session["admin_login_time"]})
@@ -409,6 +494,7 @@ def admin_check_auth():
 
 
 @app.route("/admin/logout", methods=["POST"])
+@_password_login_only
 @csrf_protected
 def admin_logout():
     _end_admin_session()
@@ -453,7 +539,7 @@ def admin_users_create():
     username, pin = body.get("username"), body.get("pin")
     if not username or not pin:
         return _error("username and pin are required", 400)
-    users_store.create_user(username, pin, bool(body.get("active", True)))
+    users_store.create_user(username, pin, bool(body.get("active", True)), body.get("access"))
     _audit_admin("ADMIN_USER_CREATE", f"username={username}")
     return jsonify({"status": "created"}), 201
 
@@ -463,7 +549,8 @@ def admin_users_create():
 @csrf_protected
 def admin_users_update(username: str):
     body = _json_body()
-    users_store.update_user(username, pin=body.get("pin"), active=body.get("active"))
+    users_store.update_user(username, pin=body.get("pin"), active=body.get("active"),
+                            access_rules=body.get("access", KEEP))
     _audit_admin("ADMIN_USER_UPDATE", f"username={username}")
     return jsonify({"status": "updated"})
 
@@ -490,7 +577,7 @@ def admin_generate_pin():
         length = 0
     if not PIN_MIN_LENGTH <= length <= PIN_MAX_LENGTH:
         return _error(f"length must be {PIN_MIN_LENGTH}-{PIN_MAX_LENGTH}", 400)
-    pin = generate_pin(length, users_store.all_pins())
+    pin = generate_pin(length, users_store.pin_taken)
     if pin is None:
         return _error(f"No unused {length}-digit PIN is left", 409)
     return jsonify({"pin": pin})

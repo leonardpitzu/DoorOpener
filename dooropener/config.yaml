@@ -1,5 +1,5 @@
 name: DoorOpener
-version: "2.7.0"
+version: "2.8.0"
 slug: dooropener
 description: >-
   A secure web interface for controlling smart door openers via Home Assistant.
@@ -12,9 +12,13 @@ arch:
   - armv7
 startup: application
 boot: auto
-ingress: false
+# The admin panel in Home Assistant's sidebar, behind its login. Ingress reaches
+# the app on its internal port 8099, which is not published on the host.
+ingress: true
+ingress_port: 8099
 panel_icon: mdi:door
 panel_title: DoorOpener
+panel_admin: true
 # [PROTO:ssl] is https while the ssl option is on, http otherwise.
 webui: "[PROTO:ssl]://[HOST]:[PORT:6532]"
 watchdog: "[PROTO:ssl]://[HOST]:[PORT:6532]/health"
@@ -56,7 +60,7 @@ schema:
   certfile: str
   keyfile: str
   test_mode: bool
-  admin_password: password
+  admin_password: password?
   max_attempts: "int(1,100)"
   block_time_minutes: "int(1,60)"
   max_global_attempts_per_hour: "int(1,1000)"
