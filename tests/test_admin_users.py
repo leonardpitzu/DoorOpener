@@ -47,8 +47,8 @@ def test_admin_users_list_empty(mock_users_store, monkeypatch):
 
 
 def test_admin_users_list_with_json_users(mock_users_store, monkeypatch):
-    mock_users_store.create_user("alice", "1234")
-    mock_users_store.create_user("bob", "5678")
+    mock_users_store.create_user("alice", "1234", doors=["door"])
+    mock_users_store.create_user("bob", "5678", doors=["door"])
     mock_users_store.record_use("alice")
 
     c = client_app()
@@ -85,7 +85,7 @@ def test_admin_users_create(mock_users_store):
 
 
 def test_admin_users_create_duplicate(mock_users_store):
-    mock_users_store.create_user("existing", "1234")
+    mock_users_store.create_user("existing", "1234", doors=["door"])
     c = client_app()
     _admin_session(c)
     response = c.post(
@@ -107,7 +107,7 @@ def test_admin_users_create_invalid_data(mock_users_store):
 
 
 def test_admin_users_update(mock_users_store):
-    mock_users_store.create_user("testuser", "1234")
+    mock_users_store.create_user("testuser", "1234", doors=["door"])
     c = client_app()
     _admin_session(c)
     response = c.put("/admin/users/testuser", json={"pin": "5678", "active": False})
@@ -126,7 +126,7 @@ def test_admin_users_update_nonexistent(mock_users_store):
 
 
 def test_admin_users_delete(mock_users_store):
-    mock_users_store.create_user("testuser", "1234")
+    mock_users_store.create_user("testuser", "1234", doors=["door"])
     c = client_app()
     _admin_session(c)
     response = c.delete("/admin/users/testuser")
@@ -165,7 +165,7 @@ def test_admin_users_unauthenticated_access(mock_users_store):
 
 
 def test_times_used_counter_integration(mock_users_store, monkeypatch):
-    mock_users_store.create_user("testuser", "1234")
+    mock_users_store.create_user("testuser", "1234", doors=["door"])
 
     c = client_app()
     response = c.post(
@@ -184,8 +184,8 @@ def test_times_used_counter_integration(mock_users_store, monkeypatch):
 
 
 def test_user_management_ui_data_structure(mock_users_store):
-    mock_users_store.create_user("active_user", "1111")
-    mock_users_store.create_user("inactive_user", "2222")
+    mock_users_store.create_user("active_user", "1111", doors=["door"])
+    mock_users_store.create_user("inactive_user", "2222", doors=["door"])
     mock_users_store.update_user("inactive_user", active=False)
     mock_users_store.record_use("active_user")
     mock_users_store.record_use("active_user")

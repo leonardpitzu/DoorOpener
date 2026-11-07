@@ -7,8 +7,10 @@ and exposes all settings as module-level attributes.
 import json
 import logging
 import os
+import re
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -79,12 +81,87 @@ def _ha_endpoint(opts: Mapping, env: Mapping[str, str]) -> tuple[str, str]:
 
 
 ha_url, ha_token = _ha_endpoint(_opts, os.environ)
-entity_id: str = (_opts.get("entity_id") or "").strip()
 
-_entity_parts = entity_id.split(".", 1)
-device_name: str = _entity_parts[1] if len(_entity_parts) == 2 else entity_id
+# Openings and refusals go to Home Assistant as events and logbook entries
+# unless this is off. The brute-force alert is sent either way.
+report_to_ha: bool = bool(_opts.get("report_to_ha", True))
 
-battery_entity: str = (_opts.get("battery_entity") or "").strip()
+
+# ---------------------------------------------------------------------------
+# Doors
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Door:
+    """Something the keypad opens: a door, a barrier, a gate, a garage door."""
+
+    id: str  # in shortcut links (/barrier) and in each user's door permissions
+    name: str
+    entity_id: str
+    battery_entity: str = ""
+    icon: str = "door"
+
+
+DOOR_ICONS = ("door", "barrier", "gate", "garage")
+DOOR_DOMAINS = ("switch", "lock", "input_boolean", "button", "cover", "script")
+_DOOR_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
+_DOOR_ENTITY = re.compile(r"(%s)\.[a-z0-9_]+" % "|".join(DOOR_DOMAINS))
+_BATTERY_ENTITY = re.compile(r"sensor\.[a-z0-9_]+")
+# The keypad's own paths, which a door's link must not shadow.
+RESERVED_DOOR_IDS = frozenset({"admin", "static", "health", "battery", "open-door"})
+
+
+def _parse_doors(opts: Mapping) -> tuple[Door, ...]:
+    """The configured doors, in order. Raises RuntimeError naming the first problem."""
+    raw = opts.get("doors")
+    if raw is None and (opts.get("entity_id") or "").strip():
+        # An options.json from before 3.0 names a single door at the top level.
+        raw = [{"id": "door", "name": "Door", "entity_id": opts.get("entity_id"),
+                "battery_entity": opts.get("battery_entity")}]
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise RuntimeError("Refusing to start: doors must be a list of doors, each with an id, a name and an entity")
+    doors: list[Door] = []
+    for number, item in enumerate(raw, 1):
+        door = Door(
+            id=str(item.get("id") or "").strip(),
+            name=str(item.get("name") or "").strip() or str(item.get("id") or "").strip(),
+            entity_id=str(item.get("entity_id") or "").strip(),
+            battery_entity=str(item.get("battery_entity") or "").strip(),
+            icon=str(item.get("icon") or "").strip() or "door",
+        )
+        problem = _door_problem(door, doors)
+        if problem:
+            raise RuntimeError(f"Refusing to start: door {number} ({door.name or 'no name'}) {problem}")
+        doors.append(door)
+    return tuple(doors)
+
+
+def _door_problem(door: Door, earlier: list[Door]) -> str | None:
+    if not _DOOR_ID.fullmatch(door.id):
+        return "needs an id of lowercase letters, digits, - and _ (up to 24), like barrier"
+    if door.id in RESERVED_DOOR_IDS:
+        return f"cannot use the id {door.id}: the keypad uses /{door.id} itself"
+    if any(other.id == door.id for other in earlier):
+        return f"has the same id as another door ({door.id}); each needs its own"
+    if len(door.name) > 32:
+        return "has a name longer than 32 characters"
+    if not _DOOR_ENTITY.fullmatch(door.entity_id):
+        return "needs an entity that opens it: a " + ", ".join(DOOR_DOMAINS) + " entity"
+    if door.battery_entity and not _BATTERY_ENTITY.fullmatch(door.battery_entity):
+        return "has a battery sensor that is not a sensor entity"
+    if door.icon not in DOOR_ICONS:
+        return "has an icon other than " + ", ".join(DOOR_ICONS)
+    return None
+
+
+doors: tuple[Door, ...] = _parse_doors(_opts)
+_doors_by_id = {door.id: door for door in doors}
+
+
+def door(door_id: str) -> Door | None:
+    """The configured door with this id, or None."""
+    return _doors_by_id.get(door_id)
 
 # ---------------------------------------------------------------------------
 # Inline PEM certificate support

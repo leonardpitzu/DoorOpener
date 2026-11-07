@@ -3,19 +3,28 @@
     {
       "pin_hashing": {"scheme": "scrypt-16384-8-1", "salt": "<hex>"},
       "users": {
-        "alice": {"pin_hash": "<hex>", "active": true, "access": null,
+        "alice": {"pin_hash": "<hex>", "active": true, "doors": ["barrier", "door"],
+                  "access": null, "phone_key": "<hex>",
+                  "visits": 0, "visit_started_at": null, "finished": null, "finished_at": null,
                   "created_at": "...", "updated_at": "...", "last_used_at": null, "times_used": 0}
       }
     }
 
 PINs are stored hashed (see ``pins``) and can never be read back. A store written
 before 2.8.0 keeps them in plain text under "pin"; it is converted the first time
-it is loaded. ``access`` holds the rules of ``access``; ``null`` means always.
+it is loaded, as are the access rules of a store from before 3.0.
+
+``doors`` are the ids of the doors a user may open. ``access`` holds the rules of
+``access`` (``null``: always); ``visits`` and ``visit_started_at`` count a guest's
+uses. A guest whose end date passes, or whose uses run out, is switched off
+(``active`` false) with the reason in ``finished``, and stays in the list.
+``phone_key`` lets the keypad recognise this user's phones; it changes with the PIN.
 """
 
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -30,11 +39,14 @@ from pins import PIN_HASH_SCHEME, hash_pin, is_valid_pin
 logger = logging.getLogger("dooropener")
 
 # Why a PIN that matches nobody, or a disabled user, was refused (audit statuses).
+# A guest switched off by their end date or uses keeps that reason instead.
 NO_MATCH = "AUTH_FAILURE"
 DISABLED = "DISABLED"
 
-# update_user(access_rules=KEEP) leaves a user's rules as they are; None clears them.
+# update_user(access_rules=KEEP, doors=KEEP) leaves those as they are; None clears the rules.
 KEEP = object()
+
+_DOOR_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
 
 
 class UsersStoreError(RuntimeError):
@@ -58,6 +70,20 @@ class UserNotFound(KeyError):
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+NO_VISIT = access.NO_USAGE
+
+
+def _usage(meta: dict) -> access.Usage:
+    """A user's visits so far, as ``access`` reads them."""
+    try:
+        start = datetime.fromisoformat(meta["visit_started_at"]) if meta.get("visit_started_at") else None
+    except (TypeError, ValueError):
+        start = None
+    if start is not None and start.tzinfo is None:
+        start = None  # every stored visit start has an offset; anything else is not one
+    return access.Usage(visits=int(meta.get("visits") or 0), visit_start=start)
 
 
 class UsersStore:
@@ -130,13 +156,30 @@ class UsersStore:
         self.data = data
         self._loaded = True
         self._index = None
-        if self._hash_plain_pins():
+        hashed = self._hash_plain_pins()
+        upgraded = self._upgrade_users()
+        if hashed or upgraded:
             try:
                 self._save_atomic()
-                logger.info("Converted the stored PINs to hashes")
+                logger.info("Converted the users store to this version's format")
             except (OSError, UsersStoreError) as e:
                 # The converted store works from memory; the next write saves it.
                 logger.warning("Could not save the converted users store: %s", e)
+
+    def _upgrade_users(self) -> bool:
+        """Bring users written by an older version up to date. True if any changed."""
+        changed = False
+        for meta in self.data["users"].values():
+            if not isinstance(meta, dict):
+                continue
+            rules = access.upgrade(meta.get("access"))
+            if rules != meta.get("access"):
+                meta["access"] = rules
+                changed = True
+            if not meta.get("phone_key"):
+                meta["phone_key"] = secrets.token_hex(8)
+                changed = True
+        return changed
 
     def _hash_plain_pins(self) -> bool:
         """Hash the plain-text PINs an older version left. True if there were any."""
@@ -242,7 +285,8 @@ class UsersStore:
 
         Returns ``(username, None)`` for a PIN that works, ``(None, NO_MATCH)`` for
         one nobody has, and ``(username, reason)`` for one that is disabled or
-        outside its access rules. *now* is the door's local time.
+        outside its access rules. *now* is the door's local time (aware). Which
+        doors the user may open is the caller's to check (see :meth:`profile`).
         """
         with self._lock:
             self._ensure_loaded()
@@ -252,8 +296,8 @@ class UsersStore:
         with self._lock:
             meta = self.data["users"].get(user) or {}
             if not meta.get("active", True):
-                return user, DISABLED
-            return user, access.denial(meta.get("access"), now)
+                return user, meta.get("finished") or DISABLED
+            return user, access.denial(meta.get("access"), now, _usage(meta))
 
     def pin_taken(self, pin: str, exclude: str | None = None) -> bool:
         """True if *pin* belongs to a user other than *exclude*, active or not."""
@@ -273,13 +317,30 @@ class UsersStore:
                 items.append({
                     "username": user,
                     "active": bool(meta.get("active", True)),
+                    "doors": list(meta.get("doors") or []),
                     "access": meta.get("access"),
+                    "visits": meta.get("visits", 0),
+                    "finished": meta.get("finished"),
+                    "finished_at": meta.get("finished_at"),
                     "created_at": meta.get("created_at"),
                     "updated_at": meta.get("updated_at"),
                     "last_used_at": meta.get("last_used_at"),
                     "times_used": meta.get("times_used", 0),
                 })
             return {"users": items}
+
+    def profile(self, username: str) -> dict[str, Any]:
+        """What the keypad needs about a user: doors, rules, phone key, and why they were switched off."""
+        with self._lock:
+            self._ensure_loaded()
+            meta = self.data["users"].get(username) or {}
+            return {
+                "doors": list(meta.get("doors") or []),
+                "access": meta.get("access"),
+                "phone_key": meta.get("phone_key") or "",
+                "finished": meta.get("finished"),
+                "finished_at": meta.get("finished_at"),
+            }
 
     @staticmethod
     def _validate_username(username: str) -> bool:
@@ -297,12 +358,24 @@ class UsersStore:
         except ValueError as e:
             raise InvalidUser(str(e)) from e
 
-    def create_user(self, username: str, pin: str, active: bool = True, access_rules: Any = None) -> None:
+    @staticmethod
+    def _doors(raw: Any) -> list[str]:
+        """Door ids, in order, each once. Whether the doors exist is the caller's to check."""
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or not all(isinstance(d, str) and _DOOR_ID.fullmatch(d) for d in raw):
+            raise InvalidUser("doors must be a list of door ids")
+        return list(dict.fromkeys(raw))
+
+    def create_user(
+        self, username: str, pin: str, active: bool = True, access_rules: Any = None, doors: Any = None,
+    ) -> None:
         if not self._validate_username(username):
             raise InvalidUser("Invalid username")
         if not is_valid_pin(pin):
             raise InvalidUser("PIN must be 4-8 digits")
         rules = self._rules(access_rules)
+        door_ids = self._doors(doors)
         with self._lock:
             self._ensure_loaded()
             if username in self.data["users"]:
@@ -314,7 +387,13 @@ class UsersStore:
             self.data["users"][username] = {
                 "pin_hash": digest,
                 "active": bool(active),
+                "doors": door_ids,
                 "access": rules,
+                "phone_key": secrets.token_hex(8),
+                "visits": 0,
+                "visit_started_at": None,
+                "finished": None,
+                "finished_at": None,
                 "created_at": now,
                 "updated_at": now,
                 "last_used_at": None,
@@ -324,24 +403,39 @@ class UsersStore:
 
     def update_user(
         self, username: str, pin: str | None = None, active: bool | None = None, access_rules: Any = KEEP,
+        doors: Any = KEEP, now: datetime | None = None,
     ) -> None:
+        """Change a user. Switching a guest back on needs an end date still ahead of *now*
+        (the door's local time), and gives them their uses afresh."""
         if pin is not None and not is_valid_pin(pin):
             raise InvalidUser("PIN must be 4-8 digits")
         rules = KEEP if access_rules is KEEP else self._rules(access_rules)
+        door_ids = KEEP if doors is KEEP else self._doors(doors)
+        now = now or datetime.now(UTC).astimezone()
         with self._lock:
             self._ensure_loaded()
             if username not in self.data["users"]:
                 raise UserNotFound("User not found")
             meta = self.data["users"][username]
+            new_rules = meta.get("access") if rules is KEEP else rules
+            switching_on = bool(active) and not meta.get("active", True)
+            if switching_on and access.finished(new_rules, NO_VISIT, now) == access.EXPIRED:
+                raise InvalidUser("This guest's end date has passed: set a new one to switch them back on")
             if pin is not None:
                 digest = self._digest(pin)
                 if self._owner(digest) not in (None, username):
                     raise UserConflict("PIN already in use")
                 meta["pin_hash"] = digest
+                meta["phone_key"] = secrets.token_hex(8)  # phones that knew the old PIN are forgotten
             if active is not None:
                 meta["active"] = bool(active)
+            if switching_on:
+                meta["finished"] = meta["finished_at"] = None
+                meta["visits"], meta["visit_started_at"] = 0, None
             if rules is not KEEP:
                 meta["access"] = rules
+            if door_ids is not KEEP:
+                meta["doors"] = door_ids
             meta["updated_at"] = _now_iso()
             self._save_atomic()
 
@@ -353,29 +447,73 @@ class UsersStore:
             del self.data["users"][username]
             self._save_atomic()
 
-    def record_use(self, username: str) -> bool:
-        """Count an opening. A one-time PIN is deactivated by it: returns True when that happened.
+    def adopt_doors(self, door_ids: list[str]) -> int:
+        """Give *door_ids* to every user who has no door list yet (a store from before 3.0).
 
-        The count is kept in memory at once but written at most every
-        ``_TOUCH_FLUSH_INTERVAL``; :meth:`flush_touches` (run at exit) writes the
-        rest. Deactivating a one-time PIN is written immediately.
+        Returns how many users got them. Users who already have a list keep it, so a
+        door added later is opened by nobody until the admin ticks it for them.
         """
+        with self._lock:
+            self._ensure_loaded()
+            missing = [meta for meta in self.data["users"].values() if isinstance(meta, dict) and "doors" not in meta]
+            for meta in missing:
+                meta["doors"] = list(door_ids)
+            if missing:
+                self._save_atomic()
+            return len(missing)
+
+    def retire(self, now: datetime) -> list[tuple[str, str]]:
+        """Switch off the guests whose end date has passed or whose uses ran out.
+
+        They stay in the list, disabled, with the reason in ``finished``. Returns
+        ``(username, reason)`` for each one switched off now. *now* is aware local time.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            done = []
+            for user, meta in self.data["users"].items():
+                if not isinstance(meta, dict) or not meta.get("active", True):
+                    continue
+                reason = access.finished(meta.get("access"), _usage(meta), now)
+                if reason:
+                    meta["active"] = False
+                    meta["finished"], meta["finished_at"] = reason, _now_iso()
+                    meta["updated_at"] = meta["finished_at"]
+                    done.append((user, reason))
+            if done:
+                self._touch_dirty = False  # the write below carries any pending counts too
+                self._save_atomic()
+            return done
+
+    def record_use(self, username: str, now: datetime | None = None) -> str | None:
+        """Count an opening. For a guest with a number of uses, the first opening of a
+        visit counts one: returns "use 1 of 3" when it does, else None.
+
+        Counts are kept in memory at once but written at most every
+        ``_TOUCH_FLUSH_INTERVAL``; :meth:`flush_touches` (run at exit) writes the
+        rest. A counted use is written immediately.
+        """
+        now = now or datetime.now(UTC)
         with self._lock:
             self._ensure_loaded()
             meta = self.data["users"].get(username)
             if meta is None:
-                return False
+                return None
             meta["last_used_at"] = _now_iso()
             meta["times_used"] = meta.get("times_used", 0) + 1
             self._touch_dirty = True
-            if access.is_one_time(meta.get("access")):
-                meta["active"] = False
-                meta["updated_at"] = meta["last_used_at"]
-                self.flush_touches()
-                return True
+            note = None
+            if not access.in_visit(_usage(meta), now):
+                meta["visits"] = meta.get("visits", 0) + 1
+                meta["visit_started_at"] = now.isoformat()
+                uses = (meta.get("access") or {}).get("uses")
+                if uses:
+                    note = f"use {meta['visits']} of {uses}"
+                    self.flush_touches()
+                    return note
             if time.monotonic() - self._last_touch_flush >= self._TOUCH_FLUSH_INTERVAL:
                 self.flush_touches()
-            return False
+            return note
 
     def flush_touches(self) -> None:
         """Persist any pending in-memory usage counts with a single atomic write."""

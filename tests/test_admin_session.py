@@ -77,7 +77,7 @@ def test_generate_pin_returns_an_unused_pin(client):
     import app as app_module
     from pins import is_valid_pin, trivial_pins
 
-    app_module.users_store.create_user("alice", "482915")
+    app_module.users_store.create_user("alice", "482915", doors=["door"])
     _login_as_of(client, timedelta(0))
     for length in range(4, 9):
         r = client.get(f"/admin/generate-pin?length={length}")
@@ -105,7 +105,7 @@ def test_generate_pin_reports_a_full_space(client, monkeypatch):
 def test_generated_pins_avoid_disabled_users(client, monkeypatch):
     import app as app_module
     import pins
-    app_module.users_store.create_user("bob", "4821", active=False)
+    app_module.users_store.create_user("bob", "4821", active=False, doors=["door"])
     draws = iter([4821, 5093])
     monkeypatch.setattr(pins.secrets, "randbelow", lambda _n: next(draws))
     _login_as_of(client, timedelta(0))

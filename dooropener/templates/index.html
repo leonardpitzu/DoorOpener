@@ -1,25 +1,32 @@
+{% from "icons.html" import icon %}
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DoorOpener</title>
+    <title>{{ title }}</title>
     <meta name="theme-color" content="#121212">
-    <link rel="manifest" href="{{ url_for('manifest_file') }}">
+    <link rel="manifest" href="{{ url_for('manifest_file', to=shortcut) if shortcut else url_for('manifest_file') }}">
     <link rel="icon" type="image/png" href="{{ asset('favicon.png') }}">
     <link rel="alternate icon" href="{{ asset('favicon.ico') }}">
     <link rel="apple-touch-icon" href="{{ asset('favicon.png') }}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="DoorOpener">
+    <meta name="apple-mobile-web-app-title" content="{{ title }}">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="stylesheet" href="{{ asset('keypad.css') }}">
     <script src="{{ asset('keypad.js') }}" defer></script>
 </head>
 
-<body data-base="{{ request.script_root }}" data-version="{{ app_version }}" data-battery="{{ '1' if battery_enabled else '0' }}">
+<body data-base="{{ request.script_root }}" data-version="{{ app_version }}" data-doors="{{ shortcut }}" data-battery-door="{{ battery_door }}">
     <div class="container">
+        {% if targets %}
+        <!-- A shortcut page names the doors it opens -->
+        <div class="door-header">
+            {% for door in targets %}<span class="door-tag">{{ icon(door.icon) }}{{ door.name }}</span>{% endfor %}
+        </div>
+        {% endif %}
         <!-- Matrix-style ACCESS DENIED popup -->
         <div id="accessDeniedPopup"
             style="display:none; position:absolute; top:-60px; left:50%; transform:translateX(-50%); z-index:10; background:rgba(0,0,0,0.95); color:#ff0000; font-family:'Courier New',monospace; font-size:2rem; padding:18px 36px; border-radius:14px; box-shadow:0 8px 32px 0 rgba(255, 0, 0, 0.18),0 2px 16px 0 rgba(0,0,0,0.3); border:2px solid #ff0000; letter-spacing:2px; text-shadow:0 0 8px #ff0000,0 0 2px #ff0000; pointer-events:none; opacity:0; transition:opacity 0.35s, top 0.35s;">
@@ -36,8 +43,22 @@
             Enter PIN
         </div>
 
+        {% if no_doors %}
+        <p class="no-doors">No doors are set up yet.</p>
+        {% endif %}
+
+        <!-- After the PIN, when it may open more than one door: pick one -->
+        <div id="choice" class="choice" hidden>
+            <div id="choiceTitle" class="choice-title"></div>
+            <div id="tiles" class="tiles"></div>
+            <div class="choice-foot">
+                <span id="choiceCountdown"></span>
+                <button type="button" id="choiceCancel" class="choice-cancel">Cancel</button>
+            </div>
+        </div>
+
         <!-- Keypad -->
-        <div class="keypad"
+        <div id="keypad" class="keypad"
             style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 1.5rem; width: 280px; margin-left: auto; margin-right: auto;">
             <button class="keypad-btn" data-digit="1">1</button>
             <button class="keypad-btn" data-digit="2">2</button>
@@ -56,7 +77,12 @@
     </div>
     <div id="toast-container"></div>
 
-    {% if battery_enabled %}
+    {#- The tiles' icons, copied by keypad.js -#}
+    {% for name in ("door", "barrier", "gate", "garage") %}
+    <template id="icon-{{ name }}">{{ icon(name) }}</template>
+    {% endfor %}
+
+    {% if battery_door %}
     <!-- Battery icon positioned next to admin icon -->
     <div id="battery-container"
         style="position: fixed; bottom: 20px; right: 80px; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(255,255,255,0.25); border-radius: 50px; backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.3); z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">

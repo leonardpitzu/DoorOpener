@@ -15,7 +15,7 @@ import yaml
 import config
 
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dooropener"))
-GOOD = {"admin_password": "a-real-password", "entity_id": "switch.door"}
+GOOD = {"admin_password": "a-real-password", "doors": [{"id": "door", "name": "Door", "entity_id": "switch.door"}]}
 
 
 def _import(tmp_path, code="import config", env=None, **options):
@@ -209,10 +209,15 @@ def _yaml(name):
         return yaml.safe_load(f)
 
 
-def test_the_page_shows_the_door_first_then_doorOpeners_own_settings():
-    schema = _yaml("config.yaml")["schema"]
-    assert list(schema) == ["entity_id", "battery_entity", "settings"]
+def test_the_page_shows_the_doors_first_then_doorOpeners_own_settings():
+    manifest = _yaml("config.yaml")
+    schema = manifest["schema"]
+    assert list(schema) == ["doors", "settings"]
+    (door,) = schema["doors"]  # a list of doors, each a small form
+    assert list(door) == ["name", "id", "entity_id", "battery_entity", "icon"]
+    assert manifest["options"]["doors"] == []  # a new install starts with none
     assert list(schema["settings"])[:3] == ["ssl", "certfile", "keyfile"]
+    assert manifest["options"]["settings"]["report_to_ha"] is True
 
 
 def test_the_app_asks_only_for_what_an_app_needs():
@@ -228,7 +233,8 @@ def test_every_option_has_a_name_and_a_description():
     texts = words["configuration"]
     assert set(texts) == set(manifest["schema"])
     assert set(texts["settings"]["fields"]) == set(manifest["schema"]["settings"])
-    for key, text in [*texts.items(), *texts["settings"]["fields"].items()]:
+    assert set(texts["doors"]["fields"]) == set(manifest["schema"]["doors"][0])
+    for key, text in [*texts.items(), *texts["settings"]["fields"].items(), *texts["doors"]["fields"].items()]:
         assert text["name"] and len(text["description"]) > 20, key
     assert set(words["network"]) == set(manifest["ports"])
     assert "(file name in /ssl)" in texts["settings"]["fields"]["certfile"]["name"]
@@ -242,13 +248,61 @@ def test_settings_are_read_from_their_section(tmp_path):
 
 
 @pytest.mark.parametrize("option, good, bad", [
-    ("entity_id", ["button.intercom_open", "switch.front_door", "lock.door", "input_boolean.buzz"],
+    ("id", ["barrier", "door", "front-door", "gate_2"], ["", "Barrier", "front door", "-door", "a" * 25]),
+    ("entity_id", ["button.intercom_open", "switch.front_door", "lock.door", "input_boolean.buzz",
+                   "cover.barrier", "script.open_gate"],
      ["", "intercom_open", "sensor.door", "button.Front"]),
     ("battery_entity", ["", "sensor.door_battery"], ["switch.door", "sensor."]),
 ])
-def test_entity_options_are_checked_as_the_supervisor_will(option, good, bad):
+def test_door_fields_are_checked_as_the_supervisor_will(option, good, bad):
     import re
-    rule = _yaml("config.yaml")["schema"][option]
+    rule = _yaml("config.yaml")["schema"]["doors"][0][option]
     pattern = re.fullmatch(r"match\((.*)\)\??", rule).group(1)  # the Supervisor's own parsing
     assert all(re.match(pattern, value) for value in good)
     assert not any(re.match(pattern, value) for value in bad)
+
+
+def _doors(tmp_path, doors=None, **options):
+    code = "import config; print([(d.id, d.name, d.entity_id, d.battery_entity, d.icon) for d in config.doors])"
+    if doors is not None:
+        options["doors"] = doors
+    return _import(tmp_path, code, **options)
+
+
+def test_doors_are_read_in_order(tmp_path):
+    result = _doors(tmp_path, [{"id": "barrier", "name": "Barrier", "entity_id": "cover.barrier", "icon": "barrier"},
+                               {"id": "door", "name": "Door", "entity_id": "button.intercom_open",
+                                "battery_entity": "sensor.door_battery"}])
+    assert result.stdout.strip() == str([("barrier", "Barrier", "cover.barrier", "", "barrier"),
+                                         ("door", "Door", "button.intercom_open", "sensor.door_battery", "door")])
+
+
+def test_a_standalone_options_file_from_before_3_0_is_one_door(tmp_path):
+    opts = {k: v for k, v in GOOD.items() if k != "doors"}
+    code = "import config; print([(d.id, d.name, d.entity_id, d.battery_entity) for d in config.doors])"
+    (tmp_path / "options.json").write_text(json.dumps({**opts, "entity_id": "switch.old", "battery_entity": "sensor.b"}))
+    run_env = {k: v for k, v in os.environ.items() if k not in ("FLASK_SECRET_KEY", "SUPERVISOR_TOKEN")}
+    run_env.update(DOOROPENER_OPTIONS_PATH=str(tmp_path / "options.json"), USERS_STORE_PATH=str(tmp_path / "u.json"))
+    result = subprocess.run([sys.executable, "-c", code], cwd=APP_DIR, env=run_env,  # nosec B603
+                            capture_output=True, text=True, timeout=60)
+    assert result.stdout.strip() == str([("door", "Door", "switch.old", "sensor.b")]), result.stderr
+
+
+def test_no_doors_still_starts(tmp_path):
+    result = _doors(tmp_path, [])
+    assert result.returncode == 0 and result.stdout.strip() == "[]", result.stderr
+
+
+@pytest.mark.parametrize("doors, problem", [
+    ([{"id": "door", "name": "A", "entity_id": "switch.a"}, {"id": "door", "name": "B", "entity_id": "switch.b"}],
+     "same id"),
+    ([{"id": "admin", "name": "Admin", "entity_id": "switch.a"}], "/admin"),
+    ([{"id": "Front Door", "name": "Front", "entity_id": "switch.a"}], "lowercase"),
+    ([{"id": "door", "name": "Door", "entity_id": "sensor.door"}], "entity"),
+    ([{"id": "door", "name": "Door", "entity_id": "switch.a", "battery_entity": "switch.b"}], "battery"),
+    ([{"id": "door", "name": "Door", "entity_id": "switch.a", "icon": "castle"}], "icon"),
+    ("door", "list"),
+])
+def test_doors_that_cannot_work_refuse_to_start(tmp_path, doors, problem):
+    result = _doors(tmp_path, doors)
+    assert result.returncode != 0 and problem in result.stderr
