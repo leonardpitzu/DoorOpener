@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import tls
+
 logger = logging.getLogger("dooropener")
 
 # ---------------------------------------------------------------------------
@@ -109,6 +111,26 @@ test_mode: bool = bool(_opts.get("test_mode", False))
 # who reaches the port directly pick their own IP. 0 = clients connect directly.
 trusted_proxies: int = int(_opts.get("trusted_proxies", 0))
 
+# HTTPS served by DoorOpener itself. A certificate name without a directory is
+# looked up in /ssl: Home Assistant's shared certificate folder, where its Let's
+# Encrypt app writes fullchain.pem and privkey.pem, and where the standalone
+# container expects them mounted. A full path is used as given.
+SSL_DIR = os.environ.get("DOOROPENER_SSL_DIR", "/ssl")
+
+ssl_enabled: bool = bool(_opts.get("ssl", False))
+ssl_certfile = ssl_keyfile = ""
+if ssl_enabled:
+    ssl_certfile = os.path.join(SSL_DIR, (_opts.get("certfile") or "").strip() or "fullchain.pem")
+    ssl_keyfile = os.path.join(SSL_DIR, (_opts.get("keyfile") or "").strip() or "privkey.pem")
+    try:
+        tls.server_context(ssl_certfile, ssl_keyfile)
+    except OSError as e:
+        raise RuntimeError(
+            f"Refusing to start: ssl is on, but {ssl_certfile} and {ssl_keyfile} do not load as a "
+            f"certificate and its key ({e}). As a Home Assistant app, the Let's Encrypt app puts them "
+            "in /ssl; standalone, mount them into the container (see the README)."
+        ) from e
+
 # ---------------------------------------------------------------------------
 # Security thresholds
 # ---------------------------------------------------------------------------
@@ -164,3 +186,5 @@ if _env_secure is not None:
     session_cookie_secure: bool = _env_secure.lower() == "true"
 else:
     session_cookie_secure = bool(_opts.get("session_cookie_secure", False))
+# Served over HTTPS by DoorOpener itself, the cookie never needs plain HTTP.
+session_cookie_secure = session_cookie_secure or ssl_enabled

@@ -26,9 +26,25 @@ A secure web interface for controlling smart door openers via Home Assistant.
 | `block_time_minutes` | Length of the first block; each further block doubles, up to 24 hours | No |
 | `session_max_attempts` | Failed attempts per browser session (and admin logins per IP) before blocking | No |
 | `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert | No |
+| `ssl` | Serve HTTPS with the certificate in `/ssl` (see below) | No |
+| `certfile` / `keyfile` | Certificate and key file names in `/ssl` (default: `fullchain.pem` / `privkey.pem`) | No |
 | `trusted_proxies` | Reverse proxies in front of DoorOpener (see below); `0` when clients connect directly | No |
 | `secret_key` | Session signing key, 16+ characters (random on every start if empty) | No |
-| `session_cookie_secure` | Send cookies over HTTPS only; enable when served over HTTPS | No |
+| `session_cookie_secure` | Send cookies over HTTPS only; enable behind an HTTPS reverse proxy (implied by `ssl`) | No |
+
+### HTTPS (`ssl`)
+
+Turn on `ssl` and DoorOpener serves HTTPS itself, on the same port, with the
+certificate in Home Assistant's `/ssl` folder. With the Let's Encrypt app,
+nothing else is needed: `certfile` and `keyfile` default to the
+`fullchain.pem` and `privkey.pem` it writes there, and a renewed certificate is
+served from the next connection on, without a restart. The watchdog and
+**Open Web UI** switch to https by themselves.
+
+Open DoorOpener by the name on the certificate (for example
+`https://example.duckdns.org:6532`); plain `http://` links stop working. If the
+certificate or key is missing, or they do not match, DoorOpener does not start
+and its log says why.
 
 ### Reverse proxies (`trusted_proxies`)
 

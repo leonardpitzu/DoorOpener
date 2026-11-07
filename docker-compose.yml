@@ -11,9 +11,13 @@ services:
       - ./options.json:/app/options.json:ro
       - ./users.json:/app/users.json:rw
       - ./logs:/app/logs
+      # HTTPS: put fullchain.pem and privkey.pem in ./ssl, set "ssl": true in
+      # options.json, and uncomment. Renewed files are picked up without a restart.
+      # - ./ssl:/ssl:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${DOOROPENER_PORT:-6532}/"]
+      # https when the ssl option is on, http otherwise.
+      test: ["CMD-SHELL", "curl -fsk https://localhost:${DOOROPENER_PORT:-6532}/health || curl -fs http://localhost:${DOOROPENER_PORT:-6532}/health"]
       interval: 1m
       timeout: 10s
       retries: 3

@@ -6,6 +6,8 @@
 options.json
 users.json
 users.json.*
+# The standalone container's HTTPS certificate and private key.
+ssl/
 .env
 logs/
 *.log

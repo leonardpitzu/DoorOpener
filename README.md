@@ -3,7 +3,7 @@
 A secure web interface for controlling smart door openers via [Home Assistant](https://www.home-assistant.io/) - modern glass-morphism UI with visual keypad, per-user PINs, audio feedback, battery monitoring, and brute-force protection.
 
 [![CI](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leonardpitzu/DoorOpener/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.6.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.7.0-blue?style=flat-square)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
 
 <img width="2554" height="1187" alt="image" src="https://github.com/user-attachments/assets/e9e2fd6c-aa32-4ea1-933f-668fad3fbfc4" />
@@ -59,6 +59,8 @@ Or via Compose:
 docker compose up -d
 ```
 
+To serve HTTPS, see [HTTPS](#https).
+
 ## Configuration
 
 ### `options.json`
@@ -76,6 +78,9 @@ cp options.json.example options.json
   "entity_id": "switch.dooropener_zigbee",
   "battery_entity": "sensor.dooropener_zigbee_battery",
   "port": 6532,
+  "ssl": false,
+  "certfile": "fullchain.pem",
+  "keyfile": "privkey.pem",
   "test_mode": false,
   "admin_password": "change_me_please",
   "max_attempts": 5,
@@ -96,6 +101,9 @@ cp options.json.example options.json
 | `entity_id` | Entity to trigger (`switch.*`, `lock.*`, `input_boolean.*`, or `button.*`) | _(required)_ |
 | `battery_entity` | Battery sensor entity for monitoring | auto-derived |
 | `port` | Web server port (overridden by `DOOROPENER_PORT` env var) | `6532` |
+| `ssl` | Serve HTTPS with the certificate below (see [HTTPS](#https)) | `false` |
+| `certfile` | Certificate with its full chain: a file name in `/ssl`, or a full path | `fullchain.pem` |
+| `keyfile` | The certificate's private key: a file name in `/ssl`, or a full path | `privkey.pem` |
 | `test_mode` | When `true`, simulates door actions without calling HA | `false` |
 | `admin_password` | Password for the admin dashboard; startup fails while it is empty or a well-known default | _(required)_ |
 | `max_attempts` | Failed PIN attempts per IP before blocking | `5` |
@@ -103,7 +111,7 @@ cp options.json.example options.json
 | `max_global_attempts_per_hour` | Failed attempts per hour, across all clients, that raise an alert (never a lockout) | `50` |
 | `session_max_attempts` | Failed attempts per browser session before blocking | `3` |
 | `secret_key` | Session signing key, 16+ characters; empty means random per start (or set `FLASK_SECRET_KEY`) | `""` |
-| `session_cookie_secure` | Set `true` when running behind HTTPS | `false` |
+| `session_cookie_secure` | Set `true` behind an HTTPS reverse proxy (implied by `ssl`) | `false` |
 | `trusted_proxies` | Reverse proxies whose `X-Forwarded-For` is believed; `0` = clients connect directly | `0` |
 | `ha_cert_pem` | Inline PEM certificate for self-signed HA (see below) | `""` |
 
@@ -116,22 +124,18 @@ DOOROPENER_PORT=6532
 # Timezone
 TZ=Europe/Amsterdam
 
-# Container user/group mapping (linuxserver-style)
-PUID=1000
-PGID=1000
-UMASK=002
+# Folder where certfile/keyfile names without a directory are looked up
+DOOROPENER_SSL_DIR=/ssl
 
 # Flask session secret, 16+ characters (recommended for production):
 #   python3 -c 'import secrets; print(secrets.token_hex(32))'
 FLASK_SECRET_KEY=
 
-# Set true when behind HTTPS reverse proxy
+# Set true behind an HTTPS reverse proxy (implied by "ssl": true)
 SESSION_COOKIE_SECURE=true
 ```
 
 Configuration priority: environment variables > `options.json` defaults.
-
-The image supports `PUID`, `PGID`, and `UMASK` to avoid host-side `chown`. On startup the entrypoint aligns the runtime user/group to those IDs, ensures `/app/logs` is writable, then drops privileges via `gosu`.
 
 ### Logs
 
@@ -140,7 +144,48 @@ The image supports `PUID`, `PGID`, and `UMASK` to avoid host-side `chown`. On st
 | Door access / audit log | `/app/logs/log.txt` (bind-mount `./logs:/app/logs`) |
 | Gunicorn / access log | Container stdout/stderr (`docker logs dooropener`) |
 
-### Self-signed certificates
+### HTTPS
+
+DoorOpener can serve HTTPS itself, on its usual port. Set `"ssl": true`;
+`certfile` and `keyfile` name the certificate (with its full chain) and its
+private key. A bare file name is looked up in `/ssl`; a full path is used as given.
+
+- **Home Assistant app**: turn on `ssl` in the app configuration. With the
+  Let's Encrypt app that is all: it writes `fullchain.pem` and `privkey.pem` to
+  `/ssl`, which are the defaults. The watchdog and **Open Web UI** switch to
+  https by themselves.
+- **Docker**: put the two files in `./ssl` and uncomment the `./ssl:/ssl:ro`
+  line in `docker-compose.yml`. Or mount your certbot folder and give full paths:
+
+  ```bash
+  -v /etc/letsencrypt:/etc/letsencrypt:ro
+  ```
+
+  ```json
+  "ssl": true,
+  "certfile": "/etc/letsencrypt/live/door.example.com/fullchain.pem",
+  "keyfile": "/etc/letsencrypt/live/door.example.com/privkey.pem"
+  ```
+
+  Mount all of `/etc/letsencrypt`: the files in `live/` are links into `archive/`.
+
+Renewals need nothing. Every new connection gets the certificate as it is on
+disk, so a renewed one is served at once, without a restart. A renewal caught
+halfway (new certificate, old key) keeps the previous certificate until both
+files are in place.
+
+With `ssl` on:
+
+- Open DoorOpener by the name on its certificate, e.g. `https://door.example.com:6532`.
+  An IP address gets a certificate warning, and plain `http://` no longer answers.
+- Session cookies are sent over HTTPS only.
+- DoorOpener refuses to start while the certificate or key is missing, or the
+  two do not belong together, and the log says which files it tried.
+
+Behind your own HTTPS reverse proxy, leave `ssl` off and set
+`session_cookie_secure` and `trusted_proxies` instead.
+
+### Home Assistant with a self-signed certificate
 
 If your Home Assistant uses a self-signed certificate, paste the PEM certificate directly into the `ha_cert_pem` option.
 
@@ -167,7 +212,7 @@ The certificate is written to a temporary file at startup and used for all Home 
 
 ## Usage
 
-1. **Access interface** - visit `http://localhost:6532`.
+1. **Access interface** - visit `http://localhost:6532` (`https://` and the certificate's name with `ssl` on).
 2. **Enter PIN** - use the visual keypad (4-8 digit PIN).
 3. **Auto-submit** - the door opens automatically when a valid-length PIN is entered.
 4. **Admin access** - click the gear icon for the admin dashboard.
@@ -185,8 +230,9 @@ The certificate is written to a temporary file at startup and used for all Home 
 | **Brute-force alert** | `max_global_attempts_per_hour` failures in an hour raise a Home Assistant notification. Never a lockout, which an attacker could use to shut everyone out |
 | **No PIN oracle** | A disabled account's PIN is answered and counted like any wrong PIN |
 | **Admin session expiry** | Checked on the server: 12 h, or 30 days with "remember me". Bounds a stolen cookie |
-| **Startup checks** | Refuses to start with an empty or default admin password, or a guessable secret key |
+| **Startup checks** | Refuses to start with an empty or default admin password, a guessable secret key, or `ssl` on without a usable certificate |
 | **Audit logging** | Every attempt logged with timestamp, IP, session, user, and result |
+| **HTTPS** | Served by DoorOpener itself with `ssl`; renewed certificates are picked up without a restart |
 | **Input validation** | PINs are 4-8 ASCII digits; request bodies are capped at 64 KiB |
 | **Security headers** | CSP with per-request nonces, X-Frame-Options DENY, no-sniff, etc. |
 
@@ -246,6 +292,8 @@ Every error is JSON of the form `{"status": "error", "message": "..."}`.
 | Module | Responsibility |
 |---|---|
 | `dooropener/config.py` | Loads `options.json`, exposes all settings as module attributes, timezone handling via `zoneinfo` |
+| `dooropener/gunicorn.conf.py` | Server settings (port, HTTPS, the single worker), shared by the app and the container |
+| `dooropener/tls.py` | `Certificate`: the HTTPS certificate, reloaded when its files change |
 | `dooropener/security.py` | `Throttle` (per-key backoff), `FailureAlarm`, `RateLimiter`, client identity, security headers |
 | `dooropener/pins.py` | PIN validation, constant-time comparison, the PIN generator |
 | `dooropener/audit.py` | `AuditLog`: writes, reads back and clears the audit trail |
