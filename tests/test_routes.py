@@ -1,5 +1,4 @@
 """Route-level behaviour tests: service worker, manifest, CSP, counters."""
-from datetime import timedelta
 
 
 def test_service_worker_endpoint(client):
@@ -21,7 +20,6 @@ def test_service_worker_with_gzip_does_not_500(client):
         assert r.headers.get("Content-Encoding") != "gzip"
 
 
-
 def test_manifest_endpoint(client):
     r = client.get("/manifest.webmanifest")
     assert r.status_code in (200, 404)
@@ -36,7 +34,7 @@ def test_csp_directives_on_index(client):
     assert "default-src 'self'" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
-    assert "connect-src 'self'" in csp
+    assert "connect-src 'self';" in csp  # and nothing else: no third-party calls
 
 
 def test_csp_uses_nonce_for_scripts(client):
@@ -53,64 +51,32 @@ def test_csp_uses_nonce_for_scripts(client):
     assert "'unsafe-inline'" in style_src
 
 
-def test_counters_reset_on_success_after_no_block(client, monkeypatch):
+def test_success_forgets_earlier_failures(client, monkeypatch):
+    """Wrong PINs, then the right one: the next wrong PINs count from zero again."""
     import app as app_module
-    monkeypatch.setattr(
-        "app.get_client_identifier",
-        lambda: ("2.2.2.2", "sessReset", "idReset"),
-    )
+
+    monkeypatch.setattr("app.client_identity", lambda: ("2.2.2.2", "sessReset"))
     app_module.users_store.create_user("ok", "9999")
+    almost = app_module.rate_limiter.pin_session.limit - 1
 
-    headers = {
-        "User-Agent": "pytest-client/1.0 (+https://example.test)",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Content-Type": "application/json",
-    }
-
-    r1 = client.post("/open-door", json={"pin": "0000"}, headers=headers)
-    assert r1.status_code in (401, 429)
-
-    r2 = client.post("/open-door", json={"pin": "9999"}, headers=headers)
-    assert r2.status_code in (200, 502, 500)
-
-    assert app_module.rate_limiter.ip_failed.get("idReset", 0) == 0
-    assert app_module.rate_limiter.session_failed.get("sessReset", 0) == 0
-    assert (
-        "idReset" not in app_module.rate_limiter.ip_blocked_until
-        or not app_module.rate_limiter.ip_blocked_until["idReset"]
-    )
-    assert (
-        "sessReset" not in app_module.rate_limiter.session_blocked_until
-        or not app_module.rate_limiter.session_blocked_until["sessReset"]
-    )
+    for _ in range(almost):
+        assert client.post("/open-door", json={"pin": "0000"}).status_code == 401
+    assert client.post("/open-door", json={"pin": "9999"}).status_code == 200
+    for _ in range(almost):
+        assert client.post("/open-door", json={"pin": "0000"}).status_code == 401
+    assert app_module.rate_limiter.pin_blocked_until("2.2.2.2", "sessReset") is None
 
 
-def test_counters_not_reset_on_success_when_block_active(client, monkeypatch):
+def test_correct_pin_during_a_block_is_refused_and_keeps_the_block(client, monkeypatch):
     import app as app_module
-    from config import get_current_time
 
-    monkeypatch.setattr(
-        "app.get_client_identifier",
-        lambda: ("3.3.3.3", "sessBlock", "idBlock"),
-    )
-    app_module.users_store.create_user("ok2", "1111")
+    monkeypatch.setattr("app.client_identity", lambda: ("3.3.3.3", "sessBlock"))
+    app_module.users_store.create_user("ok2", "1357")
+    throttle = app_module.rate_limiter.pin_session
+    for _ in range(throttle.limit):
+        throttle.fail("sessBlock")
 
-    app_module.rate_limiter.session_blocked_until[
-        "sessBlock"
-    ] = get_current_time() + timedelta(seconds=30)
+    r = client.post("/open-door", json={"pin": "1357"})
 
-    headers = {
-        "User-Agent": "pytest-client/1.0 (+https://example.test)",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Content-Type": "application/json",
-    }
-
-    r = client.post("/open-door", json={"pin": "1111"}, headers=headers)
     assert r.status_code == 429
-
-    assert app_module.rate_limiter.ip_failed.get("idBlock", 0) == 0
-    assert app_module.rate_limiter.session_failed.get("sessBlock", 0) == 0
-    assert (
-        app_module.rate_limiter.session_blocked_until["sessBlock"]
-        > get_current_time()
-    )
+    assert throttle.blocked_until("sessBlock") is not None

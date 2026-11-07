@@ -10,6 +10,17 @@ import config
 
 logger = logging.getLogger("dooropener")
 
+# The service that opens the door, per entity domain. Anything else is a switch.
+_OPEN_SERVICES = {
+    "lock": "lock/unlock",
+    "input_boolean": "input_boolean/turn_on",
+    "button": "button/press",
+}
+
+
+class HAError(Exception):
+    """A Home Assistant call failed. The message is safe to log: it never holds the URL."""
+
 
 class HAClient:
     """Thin wrapper around the HA REST API.
@@ -19,6 +30,8 @@ class HAClient:
     """
 
     __slots__ = ("session", "_battery_cache", "_battery_cache_ts")
+
+    _BATTERY_TTL = 60  # seconds
 
     def __init__(self):
         self.session = requests.Session()
@@ -35,38 +48,31 @@ class HAClient:
         self._battery_cache: int | None = None
         self._battery_cache_ts: float = -(self._BATTERY_TTL + 1)
 
-    def trigger_entity(self) -> dict:
-        """Call the correct HA service to open the door.
-
-        Returns ``{"success": bool, "error": str|None, "status_code": int}``.
-        """
+    def open_door(self) -> None:
+        """Call the service that opens ``config.entity_id``. Raises :class:`HAError`."""
         eid = config.entity_id
-        if eid.startswith("lock."):
-            service = "lock/unlock"
-        elif eid.startswith("input_boolean."):
-            service = "input_boolean/turn_on"
-        elif eid.startswith("button."):
-            service = "button/press"
-        else:
-            service = "switch/turn_on"
+        self._call_service(_OPEN_SERVICES.get(eid.split(".", 1)[0], "switch/turn_on"), {"entity_id": eid})
 
-        url = f"{config.ha_url}/api/services/{service}"
+    def notify(self, title: str, message: str) -> None:
+        """Best effort: show a persistent notification in Home Assistant. Never raises."""
         try:
-            resp = self.session.post(
-                url, json={"entity_id": eid}, timeout=10
+            self._call_service(
+                "persistent_notification/create",
+                # A fixed id replaces the previous alert instead of stacking a new one.
+                {"title": title, "message": message, "notification_id": "dooropener_alert"},
             )
-            resp.raise_for_status()
-            return {"success": True, "error": None, "status_code": resp.status_code}
-        except requests.RequestException as exc:
-            logger.error("HA API error: %s", exc)
-            code = getattr(getattr(exc, "response", None), "status_code", 502)
-            return {
-                "success": False,
-                "error": "Failed to contact Home Assistant",
-                "status_code": code,
-            }
+        except HAError as exc:
+            logger.warning("Could not send Home Assistant notification: %s", exc)
 
-    _BATTERY_TTL = 60  # seconds
+    def _call_service(self, service: str, data: dict) -> None:
+        try:
+            resp = self.session.post(f"{config.ha_url}/api/services/{service}", json=data, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            raise HAError(f"Home Assistant API error: {getattr(exc.response, 'status_code', '?')}") from exc
+        except requests.RequestException as exc:
+            # The exception text can contain the Home Assistant URL; keep only its kind.
+            raise HAError(f"Home Assistant unreachable ({type(exc).__name__})") from exc
 
     def get_battery_level(self) -> int | None:
         """Fetch battery percentage (0-100) or ``None``. Cached for 60s."""

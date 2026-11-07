@@ -1,4 +1,3 @@
-import hmac
 import json
 import os
 import shutil
@@ -8,9 +7,26 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from pins import is_valid_pin, secure_equals
+
 
 class UsersStoreError(RuntimeError):
     """Raised when the on-disk users store cannot be safely read or written."""
+
+
+class InvalidUser(ValueError):
+    """A username or PIN that fails validation."""
+
+
+class UserConflict(ValueError):
+    """The username or the PIN already belongs to someone."""
+
+
+class UserNotFound(KeyError):
+    """No user by that name."""
+
+    def __str__(self) -> str:  # KeyError would quote the message
+        return self.args[0] if self.args else "User not found"
 
 
 def _now_iso() -> str:
@@ -162,13 +178,11 @@ class UsersStore:
             self._ensure_loaded()
             if self._pin_cache is not None:
                 return self._pin_cache
-            result: dict[str, str] = {}
-            for user, meta in self.data.get("users", {}).items():
-                if not bool(meta.get("active", True)):
-                    continue
-                pin = meta.get("pin")
-                if isinstance(pin, str) and 4 <= len(pin) <= 8 and pin.isdigit():
-                    result[pin] = user
+            result = {
+                meta["pin"]: user
+                for user, meta in self.data.get("users", {}).items()
+                if meta.get("active", True) and is_valid_pin(meta.get("pin"))
+            }
             self._pin_cache = result
             return result
 
@@ -181,12 +195,20 @@ class UsersStore:
         with self._lock:
             self._ensure_loaded()
             for user, meta in self.data.get("users", {}).items():
-                stored_pin = meta.get("pin", "")
-                if not (isinstance(stored_pin, str) and 4 <= len(stored_pin) <= 8 and stored_pin.isdigit()):
-                    continue
-                if not bool(meta.get("active", True)) and hmac.compare_digest(stored_pin, pin):
+                stored_pin = meta.get("pin")
+                if not meta.get("active", True) and is_valid_pin(stored_pin) and secure_equals(stored_pin, pin):
                     return user
             return None
+
+    def all_pins(self) -> set[str]:
+        """Every stored PIN, disabled accounts included: the set a new PIN must avoid."""
+        with self._lock:
+            self._ensure_loaded()
+            return {
+                meta["pin"]
+                for meta in self.data.get("users", {}).values()
+                if isinstance(meta.get("pin"), str)
+            }
 
     def list_users(self, include_pins: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -219,35 +241,29 @@ class UsersStore:
         )
         return all(c in allowed for c in username)
 
-    @staticmethod
-    def _validate_pin(pin: str) -> bool:
-        return isinstance(pin, str) and pin.isdigit() and 4 <= len(pin) <= 8
-
     def _pin_in_use(self, pin: str, exclude: str | None = None) -> bool:
         """Return ``True`` if *pin* is already assigned to another user.
 
         Checks all users (active or not) to prevent collisions in the
         ``{pin: username}`` reverse map. *exclude* skips the user being updated.
         """
-        for user, meta in self.data.get("users", {}).items():
-            if user == exclude:
-                continue
-            stored_pin = meta.get("pin", "")
-            if isinstance(stored_pin, str) and hmac.compare_digest(stored_pin, pin):
-                return True
-        return False
+        return any(
+            isinstance(meta.get("pin"), str) and secure_equals(meta["pin"], pin)
+            for user, meta in self.data.get("users", {}).items()
+            if user != exclude
+        )
 
     def create_user(self, username: str, pin: str, active: bool = True) -> None:
         with self._lock:
             self._ensure_loaded()
             if not self._validate_username(username):
-                raise ValueError("Invalid username")
-            if not self._validate_pin(pin):
-                raise ValueError("Invalid pin")
+                raise InvalidUser("Invalid username")
+            if not is_valid_pin(pin):
+                raise InvalidUser("PIN must be 4-8 digits")
             if username in self.data["users"]:
-                raise KeyError("User already exists")
+                raise UserConflict("User already exists")
             if self._pin_in_use(pin):
-                raise ValueError("PIN already in use")
+                raise UserConflict("PIN already in use")
             now = _now_iso()
             self.data["users"][username] = {
                 "pin": pin,
@@ -265,11 +281,11 @@ class UsersStore:
         with self._lock:
             self._ensure_loaded()
             if username not in self.data["users"]:
-                raise KeyError("User not found")
-            if pin is not None and not self._validate_pin(pin):
-                raise ValueError("Invalid pin")
+                raise UserNotFound("User not found")
+            if pin is not None and not is_valid_pin(pin):
+                raise InvalidUser("PIN must be 4-8 digits")
             if pin is not None and self._pin_in_use(pin, exclude=username):
-                raise ValueError("PIN already in use")
+                raise UserConflict("PIN already in use")
             if active is not None:
                 active = bool(active)
             meta = self.data["users"][username]
@@ -284,7 +300,7 @@ class UsersStore:
         with self._lock:
             self._ensure_loaded()
             if username not in self.data["users"]:
-                raise KeyError("User not found")
+                raise UserNotFound("User not found")
             del self.data["users"][username]
             self._save_atomic()
 

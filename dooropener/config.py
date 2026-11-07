@@ -7,6 +7,7 @@ and exposes all settings as module-level attributes.
 import json
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -49,8 +50,22 @@ except FileNotFoundError as _e:
 # ---------------------------------------------------------------------------
 # Home Assistant
 # ---------------------------------------------------------------------------
-ha_url: str = (_opts.get("ha_url") or "").rstrip("/")
-ha_token: str = (_opts.get("ha_token") or "").strip()
+SUPERVISOR_URL = "http://supervisor/core"
+
+
+def _ha_endpoint(opts: Mapping, env: Mapping[str, str]) -> tuple[str, str]:
+    """The Home Assistant base URL and access token to use.
+
+    Defaults to the Supervisor proxy, and to the Supervisor's own token when
+    ``ha_token`` is left empty. A trailing ``/api`` is dropped, since every call
+    appends ``/api/...`` itself.
+    """
+    url = (opts.get("ha_url") or SUPERVISOR_URL).strip().rstrip("/").removesuffix("/api")
+    token = (opts.get("ha_token") or "").strip() or env.get("SUPERVISOR_TOKEN", "")
+    return url, token
+
+
+ha_url, ha_token = _ha_endpoint(_opts, os.environ)
 entity_id: str = (_opts.get("entity_id") or "").strip()
 
 _entity_parts = entity_id.split(".", 1)
@@ -88,33 +103,58 @@ elif os.getenv("REQUESTS_CA_BUNDLE", "").strip():
 # ---------------------------------------------------------------------------
 server_port: int = int(os.environ.get("DOOROPENER_PORT", _opts.get("port", 6532)))
 test_mode: bool = bool(_opts.get("test_mode", False))
-admin_password: str = (_opts.get("admin_password") or "").strip()
+
+# Reverse proxies in front of the app whose X-Forwarded-For we believe. Every
+# throttle keys on the client IP, so trusting a hop that is not there lets anyone
+# who reaches the port directly pick their own IP. 0 = clients connect directly.
+trusted_proxies: int = int(_opts.get("trusted_proxies", 0))
 
 # ---------------------------------------------------------------------------
 # Security thresholds
 # ---------------------------------------------------------------------------
 MAX_ATTEMPTS: int = int(_opts.get("max_attempts", 5))
 BLOCK_TIME: timedelta = timedelta(minutes=int(_opts.get("block_time_minutes", 5)))
+# Failed attempts per hour, across all clients, that raise an alert. Never a lockout.
 MAX_GLOBAL_ATTEMPTS_PER_HOUR: int = int(
     _opts.get("max_global_attempts_per_hour", 50)
 )
 SESSION_MAX_ATTEMPTS: int = int(_opts.get("session_max_attempts", 3))
 
+# Admin sessions live in signed cookies that logging out cannot revoke, so the
+# server bounds their age itself, counted from the login time signed into them.
+ADMIN_SESSION_MAX_AGE = timedelta(hours=12)
+ADMIN_REMEMBER_MAX_AGE = timedelta(days=30)
+
 # ---------------------------------------------------------------------------
-# Flask secret key
+# Secrets: refuse to start with ones an attacker could guess
 # ---------------------------------------------------------------------------
-_env_secret = os.environ.get("FLASK_SECRET_KEY")
-if _env_secret:
-    secret_key: str | None = _env_secret
-    random_secret_warning: bool = False
-else:
-    _cfg_secret = (_opts.get("secret_key") or "").strip()
-    if _cfg_secret:
-        secret_key = _cfg_secret
-        random_secret_warning = False
-    else:
-        secret_key = None  # Will be generated randomly at app startup
-        random_secret_warning = True
+_DEFAULT_PASSWORDS = {
+    "", "admin", "admin123", "password", "changeme", "change_me", "change-me",
+    "change_me_please", "your_admin_password",
+}
+_PLACEHOLDER_SECRETS = {
+    "secret", "secret_key", "changeme", "change-me", "please-change-me",
+    "change-me-to-something-random", "your-secret-key-here",
+}
+MIN_SECRET_KEY_LENGTH = 16
+
+admin_password: str = (_opts.get("admin_password") or "").strip()
+if admin_password.lower() in _DEFAULT_PASSWORDS:
+    raise RuntimeError(
+        "Refusing to start: admin_password is empty or a well-known default, so anyone "
+        "could log in as admin. Set a real password in the add-on configuration."
+    )
+
+secret_key: str | None = (
+    os.environ.get("FLASK_SECRET_KEY") or (_opts.get("secret_key") or "").strip() or None
+)
+if secret_key and (len(secret_key) < MIN_SECRET_KEY_LENGTH or secret_key.lower() in _PLACEHOLDER_SECRETS):
+    raise RuntimeError(
+        f"Refusing to start: secret_key is a placeholder or shorter than {MIN_SECRET_KEY_LENGTH} "
+        "characters, so session cookies (admin logins included) could be forged. Leave it empty "
+        "for a random key, or generate one: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+    )
+random_secret_warning: bool = secret_key is None
 
 # ---------------------------------------------------------------------------
 # Session cookie security

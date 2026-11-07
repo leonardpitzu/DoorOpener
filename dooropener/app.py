@@ -1,73 +1,37 @@
 #!/usr/bin/env python3
-"""
-DoorOpener Web Portal v2.0
----------------------------
-Secure Flask web app to open a door via Home Assistant API with visual
-keypad interface and comprehensive brute-force protection.
-"""
+"""DoorOpener: a PIN keypad that opens a door through Home Assistant.
 
-import gzip
-import hmac
-import json
-import logging
-import os
-from datetime import timedelta
-from functools import wraps
-from logging.handlers import RotatingFileHandler
+This module holds the routes and the request plumbing. The rest lives next door:
+settings in ``config``, brute-force protection in ``security``, PIN rules in
+``pins``, users in ``users_store``, the audit trail in ``audit`` and the Home
+Assistant calls in ``ha_client``.
+"""
 
 import atexit
+import gzip
+import logging
+import math
+import os
 import secrets
-from flask import (
-    Flask,
-    abort,
-    g,
-    jsonify,
-    render_template,
-    request,
-    send_from_directory,
-    session,
-)
+import threading
+from datetime import datetime, timedelta
+from functools import wraps
+
+from flask import Flask, g, jsonify, render_template, request, send_from_directory, session
+from werkzeug.exceptions import InternalServerError, RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
-from ha_client import HAClient
-from security import (
-    RateLimiter,
-    add_security_headers,
-    get_client_identifier,
-    is_request_suspicious,
-    validate_pin_input,
-)
+from audit import AuditLog
 from config import get_current_time
-from users_store import UsersStore, UsersStoreError
+from ha_client import HAClient, HAError
+from pins import DEFAULT_PIN_LENGTH, PIN_MAX_LENGTH, PIN_MIN_LENGTH, generate_pin, is_valid_pin, secure_equals
+from security import RateLimiter, add_security_headers, client_identity
+from users_store import InvalidUser, UserConflict, UserNotFound, UsersStore, UsersStoreError
 
-# ---------------------------------------------------------------------------
-# Version
-# ---------------------------------------------------------------------------
 # Stamped into the image from config.yaml, which the Supervisor passes to the
-# build as BUILD_VERSION. It used to be read from a VERSION file at the repo
-# root, which sits outside the add-on's Docker context and so never reached the
-# container: the portal reported 0.0.0 and its own update check short-circuited.
+# build as BUILD_VERSION.
 APP_VERSION = os.environ.get("APP_VERSION", "0.0.0")
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-log_dir = os.environ.get("DOOROPENER_LOG_DIR") or os.path.join(
-    os.path.dirname(__file__), "logs"
-)
-try:
-    os.makedirs(log_dir, exist_ok=True)
-except Exception as e:
-    logging.getLogger("dooropener").error("Could not create log directory: %s", e)
-
-log_path = os.path.join(log_dir, "log.txt")
-
-attempt_logger = logging.getLogger("door_attempts")
-attempt_logger.setLevel(logging.INFO)
-_file_handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=5)
-_file_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-attempt_logger.handlers = [_file_handler]
 
 logger = logging.getLogger("dooropener")
 logger.setLevel(logging.INFO)
@@ -77,669 +41,469 @@ if not logger.handlers:
     logger.addHandler(_sh)
 
 # ---------------------------------------------------------------------------
-# Flask application
+# Application and shared objects
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-
-if config.secret_key:
-    app.secret_key = config.secret_key
-else:
-    app.secret_key = secrets.token_hex(32)
-
-app.config["RANDOM_SECRET_WARNING"] = config.random_secret_warning
-if config.random_secret_warning:
-    logger.warning(
-        "FLASK_SECRET_KEY not set and no secret_key in options; "
-        "sessions may become invalid across restarts or workers."
-    )
-
+if config.trusted_proxies:
+    _hops = config.trusted_proxies
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_hops, x_proto=_hops, x_host=_hops)
+app.secret_key = config.secret_key or secrets.token_hex(32)
 app.config.update(
     SESSION_COOKIE_SECURE=config.session_cookie_secure,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_PATH="/",
-    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+    PERMANENT_SESSION_LIFETIME=config.ADMIN_REMEMBER_MAX_AGE,
+    MAX_CONTENT_LENGTH=64 * 1024,  # every endpoint takes a tiny JSON body
+    CSRF_ENABLED=True,
 )
 
-# ---------------------------------------------------------------------------
-# Shared objects
-# ---------------------------------------------------------------------------
+_HERE = os.path.dirname(__file__)
+USERS_STORE_PATH = os.environ.get("USERS_STORE_PATH", os.path.join(_HERE, "users.json"))
+LOG_DIR = os.environ.get("DOOROPENER_LOG_DIR") or os.path.join(_HERE, "logs")
+
 rate_limiter = RateLimiter()
 ha_client = HAClient()
-
-USERS_STORE_PATH = os.environ.get(
-    "USERS_STORE_PATH", os.path.join(os.path.dirname(__file__), "users.json")
-)
 users_store = UsersStore(USERS_STORE_PATH)
+audit_log = AuditLog(os.path.join(LOG_DIR, "log.txt"))
 
 # Persist any coalesced usage counters on shutdown (touch_user batches writes).
 atexit.register(users_store.flush_touches)
 
-
-# ---------------------------------------------------------------------------
-# Audit helpers
-# ---------------------------------------------------------------------------
-def _audit(ip, sid, user, status, details):
-    attempt_logger.info(
-        json.dumps(
-            {
-                "timestamp": get_current_time().isoformat(),
-                "ip": ip,
-                "session": sid[:8] if sid else "unknown",
-                "user": user,
-                "status": status,
-                "details": details,
-            }
-        )
-    )
-
-
-def _touch(username):
-    try:
-        users_store.touch_user(username)
-    except Exception:  # nosec B110
-        pass
+if config.random_secret_warning:
+    logger.warning("No secret_key configured: using a random one, so logins end at every restart.")
+if config.test_mode:
+    logger.warning("TEST MODE ENABLED: the door will NOT open. Disable test_mode before production use.")
 
 
 # ---------------------------------------------------------------------------
-# CSRF + CSP nonce
+# Request plumbing
 # ---------------------------------------------------------------------------
 @app.before_request
-def _set_nonce_and_csrf():
-    """Generate per-request CSP nonce and ensure a CSRF token exists in the session."""
+def _prepare_request():
+    """A fresh CSP nonce for every request, and a CSRF token for every session."""
     g.csp_nonce = secrets.token_urlsafe(16)
-    if "_csrf_token" not in session:
-        session["_csrf_token"] = secrets.token_hex(32)
+    session.setdefault("_csrf_token", secrets.token_hex(32))
 
 
-def _check_csrf():
-    """Return an error response if CSRF token is missing or invalid, else None."""
-    token = request.headers.get("X-CSRF-Token") or (
-        request.get_json(silent=True) or {}
-    ).get("_csrf_token")
-    if not token or not hmac.compare_digest(token, session.get("_csrf_token", "")):
-        return jsonify({"status": "error", "message": "Invalid or missing CSRF token"}), 403
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 @app.after_request
-def after_request(response):
-    nonce = getattr(g, "csp_nonce", None)
-    response = add_security_headers(response, csp_nonce=nonce)
-    # Static assets and the PWA shell may be cached; add_security_headers marks
-    # everything no-store by default, which needlessly defeats the service
-    # worker and re-fetches icons/CSS on every load.
-    if request.path in ("/service-worker.js", "/manifest.webmanifest") or request.path.startswith("/static/"):
-        # SW must always revalidate; other static assets can sit in cache.
-        if request.path == "/service-worker.js":
-            response.headers["Cache-Control"] = "no-cache"
-        else:
-            response.headers["Cache-Control"] = "public, max-age=3600"
+def _finish_response(response):
+    response = add_security_headers(response, csp_nonce=getattr(g, "csp_nonce", None))
+    # Responses default to no-store. Static assets may sit in the cache; the
+    # service worker itself must always be revalidated.
+    if request.path == "/service-worker.js":
+        response.headers["Cache-Control"] = "no-cache"
         response.headers.pop("Pragma", None)
-    # Gzip compression for text responses > 512 bytes.
-    # Skip direct-passthrough (send_file) responses: their body is a lazy file
-    # wrapper, so get_data() raises and the static route 500s for any gzip
-    # client (i.e. every browser) — which silently killed the service worker.
+    elif request.path.startswith(("/static/", "/manifest.webmanifest")):
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers.pop("Pragma", None)
+    return _gzip(response)
+
+
+def _gzip(response):
+    """Compress text responses over 512 bytes for clients that accept gzip.
+
+    Leaves direct-passthrough (send_file) responses alone: their body is a lazy
+    file wrapper, and reading it here would break the static routes.
+    """
+    compressible = any(t in (response.content_type or "") for t in ("text/", "application/json", "javascript"))
     if (
-        response.status_code == 200
-        and not response.direct_passthrough
-        and "gzip" in request.headers.get("Accept-Encoding", "")
-        and response.content_type
-        and any(t in response.content_type for t in ("text/", "application/json", "javascript"))
-        and response.content_length
-        and response.content_length > 512
+        response.status_code != 200
+        or response.direct_passthrough
+        or not compressible
+        or (response.content_length or 0) <= 512
+        or "gzip" not in request.headers.get("Accept-Encoding", "")
     ):
-        data = response.get_data()
-        compressed = gzip.compress(data, compresslevel=6)
-        if len(compressed) < len(data):
-            response.set_data(compressed)
-            response.headers["Content-Encoding"] = "gzip"
-            response.headers["Content-Length"] = len(compressed)
-            response.headers["Vary"] = "Accept-Encoding"
+        return response
+    data = response.get_data()
+    compressed = gzip.compress(data, compresslevel=6)
+    if len(compressed) < len(data):
+        response.set_data(compressed)  # also updates Content-Length
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Vary"] = "Accept-Encoding"
     return response
 
 
+def _error(message: str, code: int, **extra):
+    """The one shape every JSON error takes."""
+    return jsonify({"status": "error", "message": message, **extra}), code
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def _too_large(_e):
+    return _error("Request body too large", 413)
+
+
+@app.errorhandler(InvalidUser)
+def _invalid_user(e):
+    return _error(str(e), 400)
+
+
+@app.errorhandler(UserNotFound)
+def _user_not_found(e):
+    return _error(str(e), 404)
+
+
+@app.errorhandler(UserConflict)
+def _user_conflict(e):
+    return _error(str(e), 409)
+
+
+@app.errorhandler(UsersStoreError)
+def _users_store_unavailable(e):
+    # A corrupt users.json is left untouched rather than read as "no users".
+    logger.error("User store unavailable: %s", e)
+    return _error("User store unavailable (corrupt or unreadable); nothing was changed", 503)
+
+
+@app.errorhandler(InternalServerError)
+def _internal_error(_e):
+    return _error("Internal server error", 500)
+
+
+def csrf_protected(view):
+    """Reject the request unless X-CSRF-Token matches the session's token."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if app.config["CSRF_ENABLED"]:
+            token = request.headers.get("X-CSRF-Token", "")
+            if not token or not secure_equals(token, session.get("_csrf_token", "")):
+                return _error("Invalid or missing CSRF token", 403)
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def require_admin(view):
+    """Reject the request with 401 unless it comes from a valid admin session."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not _admin_session_valid():
+            return _error("Authentication required", 401)
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def _admin_session_valid() -> bool:
+    """True for a logged-in admin whose session is younger than its maximum age.
+
+    The session is a signed cookie, so a stolen copy outlives any logout; the age
+    limit, counted from the login time signed into the cookie, is what bounds it.
+    """
+    if not session.get("admin_authenticated"):
+        return False
+    try:
+        age = get_current_time() - datetime.fromisoformat(session["admin_login_time"])
+    except (KeyError, TypeError, ValueError):  # missing, malformed or naive timestamp
+        age = None
+    max_age = config.ADMIN_REMEMBER_MAX_AGE if session.permanent else config.ADMIN_SESSION_MAX_AGE
+    if age is None or not timedelta(minutes=-1) <= age <= max_age:
+        _end_admin_session()
+        return False
+    return True
+
+
+def _end_admin_session() -> None:
+    session.pop("admin_authenticated", None)
+    session.pop("admin_login_time", None)
+    session.permanent = False
+
+
+def _json_body() -> dict:
+    """The request's JSON object, or {} for anything else."""
+    body = request.get_json(force=True, silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+def _minutes_until(moment: datetime) -> int:
+    return max(1, math.ceil((moment - get_current_time()).total_seconds() / 60))
+
+
+def _blocked(until: datetime):
+    return _error("Too many failed attempts. Please try again later.", 429, blocked_until=until.timestamp())
+
+
+def _count_failure(ip: str, session_id: str) -> None:
+    """Count a wrong PIN or admin password toward the hourly alert threshold.
+
+    Crossing it writes a GLOBAL_THRESHOLD audit entry and, outside test mode,
+    raises a Home Assistant notification. Nobody is locked out.
+    """
+    if not rate_limiter.alarm.record():
+        return
+    attempts = rate_limiter.alarm.threshold
+    audit_log.record(ip, session_id, "UNKNOWN", "GLOBAL_THRESHOLD", f"{attempts} failed attempts within an hour")
+    logger.warning("%d failed attempts within an hour, the latest from %s", attempts, ip)
+    if not config.test_mode:
+        message = (
+            f"{attempts} wrong PINs or admin passwords within an hour, the latest from {ip}. "
+            "The audit log in the DoorOpener admin panel has the details."
+        )
+        _in_background(ha_client.notify, "DoorOpener: possible brute force", message)
+
+
+def _in_background(fn, *args) -> None:
+    """Run *fn* without holding up the response."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _audit_admin(status: str, details: str) -> None:
+    ip, session_id = client_identity()
+    audit_log.record(ip, session_id, "ADMIN", status, details)
+
+
+# ---------------------------------------------------------------------------
+# Keypad
+# ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return render_template("index.html", csp_nonce=g.csp_nonce, csrf_token=session.get("_csrf_token", ""), battery_enabled=bool(config.battery_entity), app_version=APP_VERSION)
+    return render_template(
+        "index.html",
+        csp_nonce=g.csp_nonce,
+        csrf_token=session["_csrf_token"],
+        battery_enabled=bool(config.battery_entity),
+    )
 
 
 @app.route("/service-worker.js")
 def service_worker():
-    try:
-        return send_from_directory(
-            os.path.join(app.root_path, "static"),
-            "service-worker.js",
-            mimetype="application/javascript",
-        )
-    except Exception:
-        abort(404)
+    return send_from_directory(app.static_folder, "service-worker.js", mimetype="application/javascript")
 
 
 @app.route("/manifest.webmanifest")
 def manifest_file():
-    try:
-        return send_from_directory(
-            os.path.join(app.root_path, "static"),
-            "manifest.webmanifest",
-            mimetype="application/manifest+json",
-        )
-    except Exception:
-        abort(404)
+    return send_from_directory(app.static_folder, "manifest.webmanifest", mimetype="application/manifest+json")
 
 
-# ---------------------------------------------------------------------------
-# Battery
-# ---------------------------------------------------------------------------
+@app.route("/health")
+def health():
+    """Liveness probe for the Supervisor watchdog."""
+    return jsonify({"status": "ok", "version": APP_VERSION})
+
+
 @app.route("/battery")
 def battery():
-    # get_battery_level() already caches for 60s and returns None when no
-    # battery entity is configured, so no extra per-IP gate is needed here.
+    # get_battery_level() caches for 60s and returns None without a battery entity.
     return jsonify({"level": ha_client.get_battery_level()})
 
 
-# ---------------------------------------------------------------------------
-# Open door
-# ---------------------------------------------------------------------------
 @app.route("/open-door", methods=["POST"])
+@csrf_protected
 def open_door():
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
+    ip, session_id = client_identity()
+
+    blocked_until = rate_limiter.pin_blocked_until(ip, session_id)
+    if blocked_until:
+        audit_log.record(ip, session_id, "UNKNOWN", "BLOCKED", f"Blocked for {_minutes_until(blocked_until)} more min")
+        return _blocked(blocked_until)
+
+    pin = _json_body().get("pin")
+    if pin is None:
+        return _error("PIN required", 400)
+    if not is_valid_pin(pin):
+        return _wrong_pin(ip, session_id, "INVALID_FORMAT", "Invalid PIN format", 400)
+
+    user = users_store.lookup_pin(pin)
+    if user is None:
+        # A disabled account's PIN is answered and counted like any other wrong
+        # PIN: anything else would let a stranger test, unthrottled, which PINs
+        # exist. Only the audit log names the account.
+        disabled = users_store.find_disabled_user_by_pin(pin)
+        if disabled:
+            return _wrong_pin(ip, session_id, "DISABLED", "Invalid PIN", 401, user=disabled)
+        return _wrong_pin(ip, session_id, "AUTH_FAILURE", "Invalid PIN", 401)
+
+    rate_limiter.pin_succeeded(ip, session_id)
+    return _open_door_for(user, ip, session_id)
+
+
+def _wrong_pin(ip: str, session_id: str, status: str, message: str, code: int, user: str = "UNKNOWN"):
+    blocked_until = rate_limiter.pin_failed(ip, session_id)
+    _count_failure(ip, session_id)
+    if not blocked_until:
+        audit_log.record(ip, session_id, user, status, message)
+        return _error(message, code)
+    minutes = _minutes_until(blocked_until)
+    audit_log.record(ip, session_id, user, status, f"{message}; blocked for {minutes} min")
+    return _error(
+        f"{message}. Too many failed attempts: try again in {minutes} min.",
+        code,
+        blocked_until=blocked_until.timestamp(),
+    )
+
+
+def _open_door_for(user: str, ip: str, session_id: str):
+    suffix = " (TEST MODE)" if config.test_mode else ""
+    if not config.test_mode:
+        try:
+            ha_client.open_door()
+        except HAError as e:
+            # A valid PIN that did not open the door belongs in the audit trail.
+            logger.error("Opening the door failed: %s", e)
+            audit_log.record(ip, session_id, user, "FAILURE", str(e))
+            return _error("Failed to contact Home Assistant", 502)
+    audit_log.record(ip, session_id, user, "SUCCESS", f"Door opened{suffix}")
+    _touch(user)
+    return jsonify({
+        "status": "success",
+        "message": f"Door open command sent{suffix}.\nWelcome home, {user.capitalize()}!",
+    })
+
+
+def _touch(username: str) -> None:
+    """Count a use. Bookkeeping only, so it never fails a door that already opened."""
     try:
-        primary_ip, session_id, identifier = get_client_identifier()
-
-        # Suspicious request check
-        if is_request_suspicious():
-            _audit(primary_ip, session_id, "UNKNOWN", "SUSPICIOUS",
-                   "Suspicious request detected")
-            return jsonify({"status": "error", "message": "Request blocked"}), 403
-
-        # Global rate limit
-        if not rate_limiter.check_global_rate_limit():
-            _audit(primary_ip, session_id, "UNKNOWN", "GLOBAL_BLOCKED",
-                   "Global rate limit exceeded")
-            return jsonify({"status": "error",
-                            "message": "Service temporarily unavailable"}), 429
-
-        # Block checks (persistent cookie + in-memory)
-        blocked, remaining = rate_limiter.is_blocked(identifier, session_id)
-        if blocked:
-            ts = rate_limiter.blocked_until_ts(identifier, session_id)
-            _audit(primary_ip, session_id, "UNKNOWN", "BLOCKED",
-                   f"Blocked for {int(remaining)}s")
-            return jsonify({
-                "status": "error",
-                "message": "Too many failed attempts. Please try again later.",
-                "blocked_until": ts,
-            }), 429
-
-        # Parse request
-        data = request.get_json(force=True, silent=True)
-        if not data or "pin" not in data:
-            logger.warning("No PIN provided in request body")
-            return jsonify({"status": "error", "message": "PIN required"}), 400
-
-        pin_valid, validated_pin = validate_pin_input(data.get("pin"))
-        if not pin_valid:
-            rate_limiter.record_failure(identifier, session_id)
-            _audit(primary_ip, session_id, "UNKNOWN", "INVALID_FORMAT",
-                   "Invalid PIN format")
-            resp: dict = {"status": "error", "message": "Invalid PIN format"}
-            ts = rate_limiter.blocked_until_ts(identifier, session_id)
-            if ts:
-                resp["blocked_until"] = ts
-                return jsonify(resp), 429
-            return jsonify(resp), 400
-
-        # Match PIN (O(1) via cached reverse map)
-        matched_user = users_store.lookup_pin(validated_pin)
-
-        if not matched_user:
-            # Check if PIN belongs to a disabled account (don't count as failed attempt)
-            disabled_user = users_store.find_disabled_user_by_pin(validated_pin)
-            if disabled_user:
-                _audit(primary_ip, session_id, disabled_user, "DISABLED",
-                       "Login attempt on disabled account")
-                return jsonify({"status": "error",
-                                "message": "Your account has been disabled. Please contact the administrator."}), 403
-
-            reason_key, remaining_attempts = rate_limiter.record_failure(
-                identifier, session_id
-            )
-            if reason_key == "session_blocked":
-                msg = f"Invalid PIN. Session blocked for {int(config.BLOCK_TIME.total_seconds()//60)} minutes"
-            elif reason_key == "ip_blocked":
-                msg = f"Invalid PIN. Access blocked for {int(config.BLOCK_TIME.total_seconds()//60)} minutes"
-            else:
-                msg = f"Invalid PIN. {remaining_attempts} attempts remaining"
-
-            _audit(primary_ip, session_id, "UNKNOWN", "AUTH_FAILURE", msg)
-            resp = {"status": "error", "message": msg}
-            ts = rate_limiter.blocked_until_ts(identifier, session_id)
-            if ts:
-                resp["blocked_until"] = ts
-            return jsonify(resp), 401
-
-        # Correct PIN - but enforce active block even on correct PIN
-        blocked, remaining = rate_limiter.is_blocked(identifier, session_id)
-        if blocked:
-            ts = rate_limiter.blocked_until_ts(identifier, session_id)
-            _audit(primary_ip, session_id, matched_user, "BLOCK_ENFORCED",
-                   f"Access blocked for {int(remaining)}s")
-            return jsonify({
-                "status": "error",
-                "message": "Too many failed attempts. Please try again later.",
-                "blocked_until": ts,
-            }), 429
-
-        # Success - reset counters
-        rate_limiter.record_success(identifier, session_id)
-        display_name = matched_user.capitalize() if isinstance(matched_user, str) else "User"
-
-        if config.test_mode:
-            _audit(primary_ip, session_id, matched_user, "SUCCESS",
-                   "Door opened (TEST MODE)")
-            _touch(matched_user)
-            return jsonify({
-                "status": "success",
-                "message": f"Door open command sent (TEST MODE).\nWelcome home, {display_name}!",
-            })
-
-        # Production - trigger HA entity
-        result = ha_client.trigger_entity()
-        if result["success"]:
-            _audit(primary_ip, session_id, matched_user, "SUCCESS", "Door opened")
-            _touch(matched_user)
-            return jsonify({
-                "status": "success",
-                "message": f"Door open command sent.\nWelcome home, {display_name}!",
-            })
-        else:
-            _audit(primary_ip, session_id, matched_user, "FAILURE",
-                   result.get("error", "HA error"))
-            return jsonify({"status": "error",
-                            "message": result["error"]}), result["status_code"]
-
-    except UsersStoreError as e:
-        # The user store is corrupt/unreadable. Fail loud and leave it untouched
-        # rather than authenticating against (or overwriting) empty data.
-        try:
-            _ip, _sid, _ = get_client_identifier()
-        except Exception:
-            _ip, _sid = request.remote_addr, "unknown"
-        _audit(_ip, _sid, "UNKNOWN", "USERS_STORE_ERROR", f"User store unavailable: {e}")
-        return jsonify({"status": "error",
-                        "message": "User store unavailable. Please contact the administrator."}), 503
+        users_store.touch_user(username)
     except Exception as e:
-        try:
-            _ip, _sid, _ = get_client_identifier()
-        except Exception:
-            _ip, _sid = request.remote_addr, "unknown"
-        _audit(_ip, _sid, "UNKNOWN", "EXCEPTION", f"Exception in open_door: {e}")
-        return jsonify({"status": "error", "message": "Internal server error"}), 500
+        logger.warning("Could not record a use for %s: %s", username, e)
 
 
 # ---------------------------------------------------------------------------
-# Admin
+# Admin: session
 # ---------------------------------------------------------------------------
 @app.route("/admin")
 def admin():
-    is_authenticated = bool(session.get("admin_authenticated"))
     return render_template(
         "admin.html",
         csp_nonce=g.csp_nonce,
-        csrf_token=session.get("_csrf_token", ""),
+        csrf_token=session["_csrf_token"],
         app_version=APP_VERSION,
-        is_authenticated=is_authenticated,
+        is_authenticated=_admin_session_valid(),
         test_mode=config.test_mode,
     )
 
 
 @app.route("/admin/auth", methods=["POST"])
+@csrf_protected
 def admin_auth():
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
-    data = request.get_json()
-    password = data.get("password", "").strip() if data else ""
-    remember_me = data.get("remember_me", False) if data else False
-    primary_ip, session_id, identifier = get_client_identifier()
-    now = get_current_time()
+    ip, session_id = client_identity()
 
-    # Check IP-based block (catches multi-session brute force)
-    admin_ip_remaining = rate_limiter.admin_ip_remaining(primary_ip)
-    if admin_ip_remaining > 0:
-        _audit(primary_ip, session_id, "ADMIN", "ADMIN_IP_BLOCKED",
-               f"Admin auth IP blocked for {int(admin_ip_remaining)}s")
-        return jsonify({"status": "error",
-                        "message": "Too many failed attempts. Please try later."}), 429
+    blocked_until = rate_limiter.admin_ip.blocked_until(ip)
+    if blocked_until:
+        audit_log.record(ip, session_id, "ADMIN", "ADMIN_BLOCKED",
+                         f"Blocked for {_minutes_until(blocked_until)} more min")
+        return _blocked(blocked_until)
 
-    if (
-        rate_limiter.session_blocked_until.get(session_id)
-        and now < rate_limiter.session_blocked_until.get(session_id)
-    ):
-        remaining = (rate_limiter.session_blocked_until[session_id] - now).total_seconds()
-        _audit(primary_ip, session_id, "ADMIN", "ADMIN_SESSION_BLOCKED",
-               f"Admin auth blocked for {int(remaining)}s")
-        return jsonify({"status": "error",
-                        "message": "Too many failed attempts. Please try later."}), 429
+    body = _json_body()
+    if not secure_equals(str(body.get("password") or "").strip(), config.admin_password):
+        blocked_until = rate_limiter.admin_ip.fail(ip)
+        _count_failure(ip, session_id)
+        details = "Invalid admin password"
+        if blocked_until:
+            details += f"; blocked for {_minutes_until(blocked_until)} min"
+        audit_log.record(ip, session_id, "ADMIN", "ADMIN_FAILURE", details)
+        return _error("Invalid admin password", 403)
 
-    if hmac.compare_digest(password, config.admin_password):
-        rate_limiter.session_failed.pop(session_id, None)
-        rate_limiter.session_blocked_until.pop(session_id, None)
-        rate_limiter.admin_record_success(primary_ip)
-        session["admin_authenticated"] = True
-        session["admin_login_time"] = now.isoformat()
-        if remember_me:
-            session.permanent = True
-        else:
-            session.permanent = False
-        _audit(primary_ip, session_id, "ADMIN", "ADMIN_SUCCESS", "Admin login")
-        return jsonify({"status": "success"})
-
-    # Failure — track per-session AND per-IP
-    rate_limiter.session_failed[session_id] = rate_limiter.session_failed.get(session_id, 0) + 1
-    ip_blocked = rate_limiter.admin_record_failure(primary_ip)
-    if rate_limiter.session_failed[session_id] >= config.SESSION_MAX_ATTEMPTS:
-        rate_limiter.session_blocked_until[session_id] = now + config.BLOCK_TIME
-        details = (f"Invalid admin password. Session blocked for "
-                    f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
-    elif ip_blocked:
-        details = (f"Invalid admin password. IP blocked for "
-                    f"{int(config.BLOCK_TIME.total_seconds()//60)} minutes")
-    else:
-        remaining = config.SESSION_MAX_ATTEMPTS - rate_limiter.session_failed[session_id]
-        details = f"Invalid admin password. {remaining} attempts remaining"
-    _audit(primary_ip, session_id, "ADMIN", "ADMIN_FAILURE", details)
-    return jsonify({"status": "error", "message": "Invalid admin password"}), 403
+    rate_limiter.admin_ip.reset(ip)
+    session["admin_authenticated"] = True
+    session["admin_login_time"] = get_current_time().isoformat()
+    session.permanent = bool(body.get("remember_me"))
+    audit_log.record(ip, session_id, "ADMIN", "ADMIN_SUCCESS", "Admin login")
+    return jsonify({"status": "success"})
 
 
-@app.route("/admin/check-auth", methods=["GET"])
+@app.route("/admin/check-auth")
 def admin_check_auth():
-    if session.get("admin_authenticated"):
-        return jsonify({"authenticated": True,
-                        "login_time": session.get("admin_login_time")})
+    if _admin_session_valid():
+        return jsonify({"authenticated": True, "login_time": session["admin_login_time"]})
     return jsonify({"authenticated": False})
 
 
 @app.route("/admin/logout", methods=["POST"])
+@csrf_protected
 def admin_logout():
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
-    session.pop("admin_authenticated", None)
-    session.pop("admin_login_time", None)
-    session.permanent = False
+    _end_admin_session()
     return jsonify({"status": "success", "message": "Logged out successfully"})
 
 
 # ---------------------------------------------------------------------------
-# Admin auth decorator
-# ---------------------------------------------------------------------------
-def require_admin(f):
-    """Decorator that returns 401 unless the session is admin-authenticated."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get("admin_authenticated"):
-            return jsonify({"error": "Authentication required"}), 401
-        return f(*args, **kwargs)
-    return decorated
-
-
-# ---------------------------------------------------------------------------
-# Logs
+# Admin: audit log
 # ---------------------------------------------------------------------------
 @app.route("/admin/logs")
 @require_admin
 def admin_logs():
-    try:
-        logs = _parse_log_file()
-        return jsonify({"logs": logs})
-    except Exception as e:
-        logger.error("Exception in admin_logs: %s", e)
-        return jsonify({"error": "Failed to load logs"}), 500
-
-
-def _parse_log_file(max_entries: int = 500):
-    """Parse the log file, returning at most *max_entries* most recent entries."""
-    logs = []
-    path = os.path.join(log_dir, "log.txt")
-    if not os.path.exists(path):
-        return logs
-
-    # Read only the tail of the file to avoid loading megabytes into memory
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return logs
-
-    # Estimate ~200 bytes per line; read enough for max_entries + margin
-    read_bytes = min(size, max_entries * 250)
-    with open(path, "rb") as f:
-        if read_bytes < size:
-            f.seek(size - read_bytes)
-            f.readline()  # skip partial first line
-        lines = f.read().decode("utf-8", errors="replace").splitlines()
-
-    for line in lines:
-        try:
-            json_start = line.find("{")
-            if json_start != -1:
-                obj = json.loads(line[json_start:])
-            else:
-                obj = json.loads(line)
-            logs.append({
-                "timestamp": obj.get("timestamp"),
-                "ip": obj.get("ip"),
-                "user": obj.get("user") if obj.get("user") != "UNKNOWN" else None,
-                "status": obj.get("status"),
-                "details": obj.get("details"),
-            })
-        except json.JSONDecodeError:
-            if " - " in line and not line.startswith("{"):
-                parts = line.split(" - ", 4)
-                if len(parts) >= 4:
-                    logs.append({
-                        "timestamp": parts[0],
-                        "ip": parts[1],
-                        "user": parts[2] if parts[2] != "UNKNOWN" else None,
-                        "status": parts[3],
-                        "details": parts[4] if len(parts) > 4 else None,
-                    })
-        except Exception:  # nosec B112
-            continue
-    return logs[-max_entries:]
+    return jsonify({"logs": audit_log.tail()})
 
 
 @app.route("/admin/logs/clear", methods=["POST"])
 @require_admin
+@csrf_protected
 def admin_logs_clear():
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
-
-    body = request.get_json(silent=True) or {}
-    mode = (body.get("mode") or "all").lower()
-
-    try:
-        removed = 0
-        kept = 0
-        if mode == "all":
-            try:
-                with open(log_path, "w", encoding="utf-8"):
-                    pass
-            except FileNotFoundError:
-                pass
-        elif mode == "test_only":
-            import tempfile as _tf
-
-            try:
-                with open(log_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-            except FileNotFoundError:
-                lines = []
-
-            filtered = []
-            for line in lines:
-                try:
-                    js = line.find("{")
-                    obj = json.loads(line[js:] if js != -1 else line)
-                    if "TEST MODE" in str(obj.get("details", "")):
-                        removed += 1
-                        continue
-                except Exception:  # nosec B110
-                    pass
-                filtered.append(line)
-            kept = len(filtered)
-
-            fd, tmp = _tf.mkstemp(prefix="log.", suffix=".txt",
-                                   dir=os.path.dirname(log_path) or None)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as t:
-                    t.writelines(filtered)
-                os.replace(tmp, log_path)
-            finally:
-                try:
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-                except Exception:  # nosec B110
-                    pass
-        else:
-            return jsonify({"error": "Invalid mode"}), 400
-
-        ip, sid, _ = get_client_identifier()
-        _audit(ip, sid,
-               "ADMIN", "ADMIN_LOGS_CLEAR",
-               f"mode={mode}, removed={removed}, kept={kept}")
-        return jsonify({"status": "ok", "mode": mode,
-                        "removed": removed, "kept": kept})
-    except Exception as e:
-        logger.error("Exception in admin_logs_clear: %s", e)
-        return jsonify({"error": "Failed to clear logs"}), 500
+    mode = str(_json_body().get("mode") or "all").lower()
+    if mode not in ("all", "test_only"):
+        return _error("Invalid mode", 400)
+    removed, kept = audit_log.clear(test_only=mode == "test_only")
+    _audit_admin("ADMIN_LOGS_CLEAR", f"mode={mode}, removed={removed}, kept={kept}")
+    return jsonify({"status": "ok", "mode": mode, "removed": removed, "kept": kept})
 
 
 # ---------------------------------------------------------------------------
+# Admin: users
 # ---------------------------------------------------------------------------
-# User management
-# ---------------------------------------------------------------------------
-@app.route("/admin/users", methods=["GET"])
+@app.route("/admin/users")
 @require_admin
 def admin_users_list():
-    try:
-        store_users = users_store.list_users(include_pins=False).get("users", [])
-        for u in store_users:
-            u["can_edit"] = True
-        return jsonify({"users": store_users})
-    except UsersStoreError as e:
-        logger.error("User store unavailable while listing users: %s", e)
-        return jsonify({"error": "User store unavailable (corrupt or unreadable)"}), 503
-    except Exception as e:
-        logger.error("Error listing users: %s", e)
-        return jsonify({"error": "Failed to list users"}), 500
+    return jsonify({"users": [{**user, "can_edit": True} for user in users_store.list_users()["users"]]})
 
 
 @app.route("/admin/users", methods=["POST"])
 @require_admin
+@csrf_protected
 def admin_users_create():
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
-    try:
-        body = request.get_json(silent=True) or {}
-        username = body.get("username")
-        pin = body.get("pin")
-        active = bool(body.get("active", True))
-        if not username or not pin:
-            return jsonify({"error": "username and pin are required"}), 400
-        users_store.create_user(username, pin, active)
-        ip, sid, _ = get_client_identifier()
-        _audit(ip, sid, "ADMIN", "ADMIN_USER_CREATE", f"username={username}")
-        return jsonify({"status": "created"}), 201
-    except KeyError:
-        return jsonify({"error": "User already exists"}), 409
-    except ValueError as ve:
-        logger.warning("ValueError creating user '%s': %s", username, ve)
-        if str(ve) == "PIN already in use":
-            return jsonify({"error": "PIN already in use"}), 409
-        return jsonify({"error": "Invalid input"}), 400
-    except UsersStoreError as e:
-        logger.error("User store unavailable while creating user: %s", e)
-        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
-    except Exception as e:
-        logger.error("Error creating user: %s", e)
-        return jsonify({"error": "Failed to create user"}), 500
+    body = _json_body()
+    username, pin = body.get("username"), body.get("pin")
+    if not username or not pin:
+        return _error("username and pin are required", 400)
+    users_store.create_user(username, pin, bool(body.get("active", True)))
+    _audit_admin("ADMIN_USER_CREATE", f"username={username}")
+    return jsonify({"status": "created"}), 201
 
 
 @app.route("/admin/users/<username>", methods=["PUT"])
 @require_admin
+@csrf_protected
 def admin_users_update(username: str):
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
-    try:
-        body = request.get_json(silent=True) or {}
-        users_store.update_user(username, pin=body.get("pin"), active=body.get("active"))
-        ip, sid, _ = get_client_identifier()
-        _audit(ip, sid, "ADMIN", "ADMIN_USER_UPDATE", f"username={username}")
-        return jsonify({"status": "updated"}), 200
-    except KeyError:
-        return jsonify({"error": "User not found"}), 404
-    except ValueError as ve:
-        logger.warning("ValueError updating user '%s': %s", username, ve)
-        if str(ve) == "PIN already in use":
-            return jsonify({"error": "PIN already in use"}), 409
-        return jsonify({"error": "Invalid input"}), 400
-    except UsersStoreError as e:
-        logger.error("User store unavailable while updating user: %s", e)
-        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
-    except Exception as e:
-        logger.error("Error updating user: %s", e)
-        return jsonify({"error": "Failed to update user"}), 500
+    body = _json_body()
+    users_store.update_user(username, pin=body.get("pin"), active=body.get("active"))
+    _audit_admin("ADMIN_USER_UPDATE", f"username={username}")
+    return jsonify({"status": "updated"})
 
 
 @app.route("/admin/users/<username>", methods=["DELETE"])
 @require_admin
+@csrf_protected
 def admin_users_delete(username: str):
-    csrf_err = _check_csrf()
-    if csrf_err:
-        return csrf_err
+    users_store.delete_user(username)
+    _audit_admin("ADMIN_USER_DELETE", f"username={username}")
+    return jsonify({"status": "deleted"})
+
+
+@app.route("/admin/generate-pin")
+@require_admin
+def admin_generate_pin():
+    """A random PIN that no user has (disabled ones included) and nobody would guess first.
+
+    Nothing is reserved: creating the user still checks for duplicates.
+    """
     try:
-        users_store.delete_user(username)
-        ip, sid, _ = get_client_identifier()
-        _audit(ip, sid, "ADMIN", "ADMIN_USER_DELETE", f"username={username}")
-        return jsonify({"status": "deleted"}), 200
-    except KeyError:
-        return jsonify({"error": "User not found"}), 404
-    except UsersStoreError as e:
-        logger.error("User store unavailable while deleting user: %s", e)
-        return jsonify({"error": "User store unavailable (corrupt or unreadable); no changes made"}), 503
-    except Exception as e:
-        logger.error("Error deleting user: %s", e)
-        return jsonify({"error": "Failed to delete user"}), 500
+        length = int(request.args.get("length", DEFAULT_PIN_LENGTH))
+    except ValueError:
+        length = 0
+    if not PIN_MIN_LENGTH <= length <= PIN_MAX_LENGTH:
+        return _error(f"length must be {PIN_MIN_LENGTH}-{PIN_MAX_LENGTH}", 400)
+    pin = generate_pin(length, users_store.all_pins())
+    if pin is None:
+        return _error(f"No unused {length}-digit PIN is left", 409)
+    return jsonify({"pin": pin})
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Entry point (development only; the add-on runs gunicorn)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    if config.test_mode:
-        logger.warning(
-            "TEST MODE ENABLED — the door will NOT open. "
-            "Disable test_mode in options.json before deploying to production."
-        )
     _debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
     if _debug:
         logger.warning(
-            "FLASK_DEBUG is enabled — the Werkzeug interactive debugger is active. "
-            "This allows remote code execution via the browser. NEVER enable in production."
+            "FLASK_DEBUG is enabled: the Werkzeug debugger allows remote code execution "
+            "from the browser. NEVER enable it in production."
         )
-    app.run(
-        host="0.0.0.0",  # nosec B104
-        port=config.server_port,
-        debug=_debug,
-    )
+    app.run(host="0.0.0.0", port=config.server_port, debug=_debug)  # nosec B104

@@ -8,17 +8,6 @@ def test_get_current_time():
     assert isinstance(get_current_time(), datetime)
 
 
-def test_get_delay_seconds():
-    from security import get_delay_seconds
-    assert get_delay_seconds(0) == 0
-    assert get_delay_seconds(1) == 1
-    assert get_delay_seconds(2) == 2
-    assert get_delay_seconds(3) == 4
-    assert get_delay_seconds(4) == 8
-    assert get_delay_seconds(5) == 16
-    assert get_delay_seconds(10) == 16  # Max delay
-
-
 def test_index_route(client):
     response = client.get("/")
     assert response.status_code == 200
