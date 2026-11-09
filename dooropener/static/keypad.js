@@ -10,6 +10,8 @@ let isSubmitting = false;
 let autoSubmitTimer = null;
 let blockCountdownTimer = null;
 let choiceTimer = null;
+let resultTimer = null;
+const RESULT_MS = 1200; // how long a result stays in the PIN box
 
 // By the phone's own clock: the keypad never says whose PIN it was.
 function greeting() {
@@ -38,8 +40,6 @@ document.querySelectorAll('.keypad-btn').forEach(btn => {
         addDigit(digit);
       } else if (action === 'clear') {
         clearPin();
-      } else if (action === 'submit') {
-        openDoor();
       }
     });
 });
@@ -89,7 +89,7 @@ function clearPin() {
 function updatePinDisplay() {
     const display = document.getElementById('pinDisplay');
     if (currentPin.length === 0) {
-        display.innerHTML = '<span style="color: rgba(0,0,0,0.4);">Enter PIN</span>';
+        display.innerHTML = '<span class="pin-placeholder">Enter PIN</span>';
     } else {
         let html = '';
         for (let i = 0; i < currentPin.length; i++) {
@@ -132,24 +132,29 @@ function openDoor() {
             showStatus('Error: Could not connect to server', 'error');
         })
         .finally(() => {
-            // Reset button and clear PIN after attempt
+            // Clear the PIN once its result has been seen
             setTimeout(() => {
-                resetSubmitButton();
                 currentPin = '';
                 updatePinDisplay();
                 isSubmitting = false;
-            }, 1200);
+            }, RESULT_MS);
         });
 }
 
-function resetSubmitButton() {
-    const submitBtn = document.getElementById('submitBtn');
-    submitBtn.style.background = 'linear-gradient(135deg, #4CAF50, #45a049)';
-    submitBtn.textContent = '✓';
+// The result shows in the PIN box for a moment, as on a phone's lock screen:
+// green when a door opens, red with a shake for a wrong PIN, amber for a PIN
+// that is right but not for now.
+function showResult(state) {
+    const display = document.getElementById('pinDisplay');
+    display.classList.remove('is-granted', 'is-denied', 'is-refused');
+    display.classList.add('is-' + state);
+    clearTimeout(resultTimer);
+    resultTimer = setTimeout(() => display.classList.remove('is-' + state), RESULT_MS);
 }
 
 function celebrate(message) {
     showStatus(greeting() + ' · ' + message, 'success');
+    showResult('granted');
     playSuccessSound();
     if (window.navigator.vibrate) {
         // Fancy "ta-da" vibration pattern: short-long-short with crescendo
@@ -160,10 +165,7 @@ function celebrate(message) {
 
 function deny(message) {
     showStatus('Error: ' + message, 'error');
-    // Change button to red cross on failure
-    const submitBtn = document.getElementById('submitBtn');
-    submitBtn.style.background = 'linear-gradient(135deg, #dc3545, #c82333)';
-    submitBtn.textContent = '✗';
+    showResult('denied');
     playFailureSound();
     showAccessDeniedPopup();
     if (window.navigator.vibrate) {
@@ -175,9 +177,7 @@ function deny(message) {
 // The PIN is right but not for now (its owner's phone gets told why): calm, not an alarm.
 function showRefused(message) {
     showStatus(message, 'refused', false, 7000);
-    const submitBtn = document.getElementById('submitBtn');
-    submitBtn.style.background = 'linear-gradient(135deg, #f0a500, #d48f00)';
-    submitBtn.textContent = '!';
+    showResult('refused');
     if (window.navigator.vibrate) window.navigator.vibrate(120);
 }
 
@@ -245,8 +245,7 @@ function chooseDoor(pass, doorId, tiles) {
         .catch(() => {
             closeChoice();
             showStatus('Error: Could not connect to server', 'error');
-        })
-        .finally(() => setTimeout(resetSubmitButton, 1200));
+        });
 }
 
 function showStatus(message, type, persistent, duration) {
@@ -488,6 +487,10 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         if (!document.hidden) startBatteryPolling();
     }
+
+    // Safari on iPhone and iPad shows a key as pressed (:active) only when the
+    // page listens for touches. Passive, so it never holds up a tap or a scroll.
+    document.addEventListener('touchstart', () => {}, { passive: true });
 
     // Initialize PIN display
     updatePinDisplay();
