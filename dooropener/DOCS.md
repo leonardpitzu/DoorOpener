@@ -97,10 +97,11 @@ the panel there (the gear icon on the keypad).
 
 ### The keypad, and shortcut links
 
-Enter a PIN on the keypad. A PIN that may open one door opens it at once; one
-that may open several shows a tile for each, for 30 seconds: tap the one to
-open. Each PIN entry opens one door, so the barrier and then the door means
-entering the PIN twice.
+Enter a PIN on the keypad: it goes through by itself once you stop typing, and
+the PIN box turns green, red or amber with the result. A PIN that may open one
+door opens it at once; one that may open several shows a tile for each, for 30
+seconds: tap the one to open. Each PIN entry opens one door, so the barrier and
+then the door means entering the PIN twice.
 
 Every door also has a shortcut link: `/barrier`, or `/barrier+door` for two.
 The link is the same for everyone (put it on a QR code at the barrier, or on

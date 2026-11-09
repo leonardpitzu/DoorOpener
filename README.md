@@ -38,8 +38,9 @@ alert.
 ## What it does
 
 - **A keypad that works on any phone.** No app to install. It can sit on the
-  home screen like one, and a PIN goes through after a short pause, without
-  pressing ✓.
+  home screen like one. It is laid out like a phone's lock screen, with no OK
+  key: the PIN goes through once you stop typing. Quick taps on the same key
+  never zoom the page, so one thumb is enough.
 - **Several doors.** A door, a barrier, a gate or a garage door, each opened by
   a Home Assistant entity: `button`, `switch`, `lock`, `input_boolean`, `cover`
   or `script`.
@@ -428,7 +429,9 @@ The host name in `ha_url` must be one of the names on that certificate.
 
 ### The keypad
 
-Enter a PIN.
+Enter a PIN. It goes through by itself once you stop typing (on a computer,
+Enter sends it at once), and the PIN box shows the result: green when a door
+opens, red for a wrong PIN, amber for a PIN that is right but not for now.
 
 - **One door:** if the PIN may open one door, that door opens.
 - **Several doors:** if it may open several, a tile for each appears for 30
